@@ -3,31 +3,75 @@ import os
 __metaclass__ = type
 
 
-class MemoryTree:
+class BaseTree:
+
+    def apply_renames(self, renames):
+        for old_path, new_path in renames:
+            self.rename(old_path, new_path)
+
+
+class FSTree(BaseTree):
     """Represents a filesystem tree."""
 
-    def __init__(self):
-        self._content = {}
+    def __init__(self, tree_root):
+        self.tree_root = tree_root
 
-    def path_to_id(self, path):
-        normpath = os.path.normpath(path)
-        if normpath.startswith('..'):
-            raise ValueError('Path outside tree.')
-        return 'e-{}'.format(normpath)
+    def _abspath(self, path):
+        return os.path.join(self.tree_root, path)
 
-    def id_to_path(self, file_id):
-        if file_id[:2] != 'e-':
-            raise ValueError('Invalid path.')
-        return file_id[2:]
+    def make_subtree(self, path):
+        return type(self)(self._abspath(path))
 
     def write_content(self, path, strings):
-        self._content[path] = ''.join(strings)
+        """Store content from iterable of strings."""
+        with open(self._abspath(path), 'w') as f:
+            f.writelines(strings)
+
+    def mkdir(self, path):
+        os.mkdir(self._abspath(path))
 
     def read_content(self, path):
-        return self._content[path]
+        """Store content from iterable of strings."""
+        with open(os.path.join(self.tree_root, path), 'r') as f:
+            return f.readlines()
 
     def rename(self, old_path, new_path):
-        self._content[new_path] = self._content.pop(old_path)
+        old_path = self._abspath(old_path)
+        new_path = self._abspath(new_path)
+        os.rename(old_path, new_path)
+
+
+class MemoryTree(BaseTree):
+    """Represents a filesystem tree in memory."""
+
+    DIRECTORY = object()
+
+    def __init__(self, tree_root='/', content=None):
+        if content is None:
+            content = {}
+        self._content = content
+        self.tree_root = tree_root
+
+    def _abspath(self, path):
+        return os.path.join(self.tree_root, path)
+
+    def make_subtree(self, path):
+        return type(self)(self._abspath(path), self._content)
+
+    def write_content(self, path, strings):
+        """Store content from iterable of strings."""
+        self._content[self._abspath(path)] = ''.join(strings)
+
+    def mkdir(self, path):
+        self._content[self._abspath(path)] = self.DIRECTORY
+
+    def read_content(self, path):
+        """Access content as iterable of strings."""
+        return iter([self._content[self._abspath(path)]])
+
+    def rename(self, old_path, new_path):
+        self._content[self._abspath(new_path)] = self._content.pop(
+                self._abspath(old_path))
 
 
 class TreeTransform:
@@ -36,8 +80,19 @@ class TreeTransform:
         self.tree = tree
         self._name_info = {}
 
+    def _tree_path_to_id(self, path):
+        normpath = os.path.normpath(path)
+        if normpath.startswith('..'):
+            raise ValueError('Path outside tree.')
+        return 'e-{}'.format(normpath)
+
+    def _tree_id_to_path(self, file_id):
+        if file_id[:2] != 'e-':
+            raise ValueError('Invalid path.')
+        return file_id[2:]
+
     def acquire_existing_id(self, path):
-        file_id = self.tree.path_to_id(path)
+        file_id = self._tree_path_to_id(path)
         if path in {'.', ''} or file_id in self._name_info:
             return file_id
         if file_id not in self._name_info:
@@ -56,15 +111,17 @@ class TreeTransform:
         try:
             parent_id, name = self._name_info[file_id]
         except:
-            return self.tree.id_to_path(file_id)
+            return self._tree_id_to_path(file_id)
         if parent_id == 'e-.':
             return name
         parent_path = self.get_final_path(parent_id)
         return os.path.join(parent_path, name)
 
+    def generate_renames(self):
+        for file_id, (parent_id, name) in self._name_info.items():
+            old_path = self._tree_id_to_path(file_id)
+            new_path = self.get_final_path(file_id)
+            yield old_path, new_path
 
     def apply(self):
-        for file_id, (parent_id, name) in self._name_info.items():
-            old_path = self.tree.id_to_path(file_id)
-            new_path = self.get_final_path(file_id)
-            self.tree.rename(old_path, new_path)
+        self.tree.apply_renames(self.generate_renames())
