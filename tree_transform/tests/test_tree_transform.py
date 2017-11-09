@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import os
 from shutil import rmtree
 from tempfile import mkdtemp
 from unittest import TestCase
@@ -43,6 +44,20 @@ class TreeTestMixin:
             subtree = tree.make_subtree('dir1')
             subtree.write_content('foo', ['asdf'])
             self.assertEqual(''.join(tree.read_content('dir1/foo')), 'asdf')
+
+    def test_make_temp_tree(self):
+        with self.tree() as tree:
+            temp_tree = tree.make_temp_tree()
+            relpath = os.path.relpath(temp_tree.tree_root, tree.tree_root)
+            self.assertNotIn('..', relpath)
+            temp_tree.write_content('n-foo', ['asdf'])
+            tree.rename(temp_tree._abspath('n-foo'), 'f-foo')
+            self.assertEqual(''.join(tree.read_content('f-foo')), 'asdf')
+
+    def test_mkdtemp(self):
+        with self.tree() as tree:
+            name = tree.mkdtemp()
+            self.assertRegexpMatches(name, 'transform-')
 
 
 class TestMemoryTree(TestCase, TreeTestMixin):

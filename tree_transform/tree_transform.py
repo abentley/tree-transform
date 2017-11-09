@@ -1,23 +1,29 @@
 import os
+import random
+from tempfile import mkdtemp
 
 __metaclass__ = type
 
 
 class BaseTree:
 
+    def __init__(self, tree_root):
+        self.tree_root = tree_root
+
     def apply_renames(self, renames):
         for old_path, new_path in renames:
             self.rename(old_path, new_path)
 
+    def _abspath(self, path):
+        return os.path.join(self.tree_root, path)
+
+    def make_temp_tree(self):
+        tree_root = self.mkdtemp()
+        return self.make_subtree(tree_root)
+
 
 class FSTree(BaseTree):
     """Represents a filesystem tree."""
-
-    def __init__(self, tree_root):
-        self.tree_root = tree_root
-
-    def _abspath(self, path):
-        return os.path.join(self.tree_root, path)
 
     def make_subtree(self, path):
         return type(self)(self._abspath(path))
@@ -29,6 +35,9 @@ class FSTree(BaseTree):
 
     def mkdir(self, path):
         os.mkdir(self._abspath(path))
+
+    def mkdtemp(self):
+        return mkdtemp(dir=self.tree_root, prefix='transform-')
 
     def read_content(self, path):
         """Store content from iterable of strings."""
@@ -47,13 +56,10 @@ class MemoryTree(BaseTree):
     DIRECTORY = object()
 
     def __init__(self, tree_root='/', content=None):
+        super(MemoryTree, self).__init__(tree_root)
         if content is None:
             content = {}
         self._content = content
-        self.tree_root = tree_root
-
-    def _abspath(self, path):
-        return os.path.join(self.tree_root, path)
 
     def make_subtree(self, path):
         return type(self)(self._abspath(path), self._content)
@@ -64,6 +70,11 @@ class MemoryTree(BaseTree):
 
     def mkdir(self, path):
         self._content[self._abspath(path)] = self.DIRECTORY
+
+    def mkdtemp(self):
+        name = ''.join(random.choice('abcdefghijklmnopqrstuvwxyz')
+                       for x in range(8))
+        return 'transform-' + name
 
     def read_content(self, path):
         """Access content as iterable of strings."""
