@@ -61,6 +61,40 @@ class TreeTestMixin:
             tree.rename('foo', 'bar')
             self.assertEqual(''.join(tree.read_content('bar')), 'asdf')
 
+    def test_rename_dir(self):
+        with self.tree() as tree:
+            tree.write_content('foo', ['asdf'])
+            tree.mkdir('bar')
+            tree.rename('foo', 'bar/foo')
+            self.assertEqual(''.join(tree.read_content('bar/foo')), 'asdf')
+
+    def test_rename_dir_missing(self):
+        with self.tree() as tree:
+            tree.write_content('foo', ['asdf'])
+            with self.assertRaises(NoParent):
+                tree.rename('foo', 'bar/foo')
+
+    def test_rename_parent_not_dir(self):
+        with self.tree() as tree:
+            tree.write_content('foo', ['asdf'])
+            tree.write_content('bar', ['asdf'])
+            with self.assertRaises(ParentNotDir):
+                tree.rename('foo', 'bar/foo')
+
+    def test_apply_renames(self):
+        with self.tree() as tree:
+            tree.write_content('file1', ['hello'])
+            tree.mkdir('dir1')
+            tt = TreeTransform(tree, write=False)
+            with tt:
+                file1 = tt.acquire_existing_id('file1')
+                dir1 = tt._tree_path_to_id('dir1')
+                self.assertEqual(tt.get_final_path(file1), 'file1')
+                tt.set_name_info(file1, dir1, 'file2')
+                tree.apply_renames(tt.generate_renames())
+                self.assertEqual('hello',
+                                 ''.join(tree.read_content('dir1/file2')))
+
     def test_mkdir(self):
         with self.tree() as tree:
             tree.mkdir('dir1')
@@ -196,34 +230,41 @@ class TestTreeTransform(TestCase):
             tt.set_name_info(file1, dir1, 'file2')
             self.assertEqual(tt.get_final_path(file1), 'dir1/file2')
 
-    def test__apply(self):
-        mem_tree = MemoryTree()
-        mem_tree.write_content('file1', ['hello'])
-        tt = TreeTransform(mem_tree, write=False)
-        with self.assertRaises(NotPending):
-            tt._apply()
-        with tt:
-            file1 = tt.acquire_existing_id('file1')
-            dir1 = tt._tree_path_to_id('dir1')
-            self.assertEqual(tt.get_final_path(file1), 'file1')
-            tt.set_name_info(file1, dir1, 'file2')
-            tt._apply()
-            self.assertEqual('hello',
-                             ''.join(mem_tree.read_content('dir1/file2')))
-
     def test_generate_renames(self):
         mem_tree = MemoryTree()
         tt = TreeTransform(mem_tree, write=False)
         with tt:
             file1 = tt.acquire_existing_id('file1')
             dir1 = tt._tree_path_to_id('dir1')
+            file1_path = tt._new_contents.full_path(file1)
             tt.set_name_info(file1, dir1, 'file2')
-            self.assertEqual([('file1', 'dir1/file2')],
-                             list(tt.generate_renames()))
+            self.assertEqual(
+                [('file1', file1_path),
+                 (file1_path, 'dir1/file2')],
+                tt.generate_renames())
+
+    def test_generate_renames_dir_swap(self):
+        mem_tree = MemoryTree()
+        tt = TreeTransform(mem_tree, write=False)
+        with tt:
+            dir1 = tt._tree_path_to_id('dir1')
+            dir2 = tt._tree_path_to_id('dir1/dir2')
+            root = tt._tree_path_to_id('.')
+            tt.set_name_info(dir1, dir2, 'dir1')
+            tt.set_name_info(dir2, root, 'dir2')
+            dir1_path = tt._new_contents.full_path(dir1)
+            dir2_path = tt._new_contents.full_path(dir2)
+            self.assertEqual(
+                [('dir1/dir2', dir2_path),
+                 ('dir1', dir1_path),
+                 (dir2_path, 'dir2'),
+                 (dir1_path, 'dir2/dir1')],
+                tt.generate_renames())
 
     def test_with(self):
         mem_tree = MemoryTree()
         mem_tree.write_content('file1', ['hello'])
+        mem_tree.mkdir('dir1')
         tt = TreeTransform(mem_tree)
         self.assertIs(InactiveTransform, type(tt._name_info))
         self.assertIs(InactiveTransform, type(tt.id_counter))
@@ -281,5 +322,5 @@ class TestTreeTransform(TestCase):
             file_id = tt.create_file('name1', parent_id, ['hello'])
             source = tt._new_contents.full_path(file_id)
             target = tt.get_final_path(file_id)
-            self.assertEqual(list(tt.generate_renames()), [(source, target)])
+            self.assertEqual(tt.generate_renames(), [(source, target)])
         self.assertEqual('hello', ''.join(mem_tree.read_content('name1')))

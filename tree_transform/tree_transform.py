@@ -87,7 +87,15 @@ class FSTree(BaseTree):
     def rename(self, old_path, new_path):
         old_path = self.full_path(old_path)
         new_path = self.full_path(new_path)
-        os.rename(old_path, new_path)
+        try:
+            os.rename(old_path, new_path)
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                raise NoParent
+            elif e.errno == errno.ENOTDIR:
+                raise ParentNotDir
+            else:
+                raise
 
 
 class MemoryTree(BaseTree):
@@ -104,16 +112,19 @@ class MemoryTree(BaseTree):
     def make_subtree(self, path):
         return type(self)(self.full_path(path), self._content)
 
-    def write_content(self, path, strings):
-        """Store content from iterable of strings."""
-        tree_path = self.full_path(path)
-        parent = os.path.dirname(tree_path)
+    def _require_parent(self, full_path):
+        parent = os.path.dirname(full_path)
         parent_content = self._content.get(parent)
         if parent_content is None:
             raise NoParent
         if parent_content is not self.DIRECTORY:
             raise ParentNotDir
-        self._content[self.full_path(path)] = ''.join(strings)
+
+    def write_content(self, path, strings):
+        """Store content from iterable of strings."""
+        full_path = self.full_path(path)
+        self._require_parent(full_path)
+        self._content[full_path] = ''.join(strings)
 
     def mkdir(self, path):
         self._content[self.full_path(path)] = self.DIRECTORY
@@ -141,7 +152,9 @@ class MemoryTree(BaseTree):
         return iter([content])
 
     def rename(self, old_path, new_path):
-        self._content[self.full_path(new_path)] = self._content.pop(
+        full_path = self.full_path(new_path)
+        self._require_parent(full_path)
+        self._content[full_path] = self._content.pop(
                 self.full_path(old_path))
 
 
@@ -200,7 +213,7 @@ class TreeTransform:
         self._name_info = InactiveTransform()
         self._temp_tree = None
         self._new_contents = None
-        self._new_contents_path = None
+        self._new_contents_path = InactiveTransform()
         self.id_counter = InactiveTransform()
 
     def _tree_path_to_id(self, path):
@@ -268,16 +281,47 @@ class TreeTransform:
         self._new_contents_path[file_id] = full_path
         return file_id
 
-    def generate_renames(self):
+    def _generate_remove_renames(self):
+        remove_renames = []
+        new_contents_path = dict(self._new_contents_path)
+        relative_new_contents = os.path.relpath(self._new_contents.tree_root,
+                                                self.tree.tree_root)
         for file_id, (parent_id, name) in self._name_info.items():
-            old_path = self._new_contents_path.get(file_id)
-            if old_path is None:
-                old_path = self._tree_id_to_path(file_id)
-            new_path = self.get_final_path(file_id, parent_id, name)
-            yield old_path, new_path
+            if file_id in self._new_contents_path:
+                continue
+            old_path = self._tree_id_to_path(file_id)
+            new_path = os.path.join(relative_new_contents, file_id)
+            remove_renames.append((old_path, new_path))
+            new_contents_path[file_id] = new_path
+        # Always remove children before parents
+        remove_renames.sort(key=lambda p: p[0], reverse=True)
+        return remove_renames, new_contents_path
 
-    def _apply(self):
-        self.tree.apply_renames(self.generate_renames())
+    def _generate_insert_renames(self, new_contents_path):
+        insert_renames = []
+        for file_id, (parent_id, name) in self._name_info.items():
+            old_path = new_contents_path[file_id]
+            new_path = self.get_final_path(file_id, parent_id, name)
+            insert_renames.append((old_path, new_path))
+        insert_renames.sort(key=lambda p: p[1])
+        return insert_renames
+
+    def generate_renames(self):
+        """Generate renames for updating tree.
+
+        Removals are always in child-to-parent order, because removing
+        something before its children generally fails.
+
+        Similarly, insertions are always in parent-to-child order, because
+        creating something before its parent generally fails.
+
+        Actual renames are decomposed into a removal and an insertion.  This
+        handles certain corner cases nicely, e.g. if the parent and child swap
+        places.
+        """
+        remove_renames, new_contents_path = self._generate_remove_renames()
+        insert_renames = self._generate_insert_renames(new_contents_path)
+        return remove_renames + insert_renames
 
     def __enter__(self):
         self._name_info = {}
@@ -291,6 +335,6 @@ class TreeTransform:
     def __exit__(self, exc_type, exc_value, exc_traceback):
         if (exc_type, exc_value, exc_traceback) == (None, None, None):
             if self.write:
-                self._apply()
+                self.tree.apply_renames(self.generate_renames())
         self.tree.rmtree(self._temp_tree.tree_root)
         self._mark_inactive()
