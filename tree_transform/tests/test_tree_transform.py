@@ -89,7 +89,7 @@ class TreeTestMixin:
             relpath = os.path.relpath(temp_tree.tree_root, tree.tree_root)
             self.assertNotIn('..', relpath)
             temp_tree.write_content('n-foo', ['asdf'])
-            tree.rename(temp_tree._abspath('n-foo'), 'f-foo')
+            tree.rename(temp_tree.full_path('n-foo'), 'f-foo')
             self.assertEqual(''.join(tree.read_content('f-foo')), 'asdf')
 
     def test_mkdtemp(self):
@@ -279,7 +279,7 @@ class TestTreeTransform(TestCase):
         with tt:
             parent_id = tt.acquire_existing_id('.')
             file_id = tt.create_file('name1', parent_id, ['hello'])
-            source = tt._new_contents._abspath(file_id)
+            source = tt._new_contents.full_path(file_id)
             target = tt.get_final_path(file_id)
             self.assertEqual(list(tt.generate_renames()), [(source, target)])
         self.assertEqual('hello', ''.join(mem_tree.read_content('name1')))

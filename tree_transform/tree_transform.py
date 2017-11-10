@@ -33,7 +33,7 @@ class BaseTree:
         for old_path, new_path in renames:
             self.rename(old_path, new_path)
 
-    def _abspath(self, path):
+    def full_path(self, path):
         return os.path.join(self.tree_root, path)
 
     def make_temp_tree(self):
@@ -45,12 +45,12 @@ class FSTree(BaseTree):
     """Represents a filesystem tree."""
 
     def make_subtree(self, path):
-        return type(self)(self._abspath(path))
+        return type(self)(self.full_path(path))
 
     def write_content(self, path, strings):
         """Store content from iterable of strings."""
         try:
-            f = open(self._abspath(path), 'w')
+            f = open(self.full_path(path), 'w')
         except IOError as e:
             if e.errno == errno.ENOENT:
                 raise NoParent
@@ -62,13 +62,13 @@ class FSTree(BaseTree):
             f.writelines(strings)
 
     def mkdir(self, path):
-        os.mkdir(self._abspath(path))
+        os.mkdir(self.full_path(path))
 
     def mkdtemp(self):
         return mkdtemp(dir=self.tree_root, prefix='transform-')
 
     def rmtree(self, path):
-        rmtree(self._abspath(path))
+        rmtree(self.full_path(path))
 
     def read_content(self, path):
         """Store content from iterable of strings."""
@@ -85,8 +85,8 @@ class FSTree(BaseTree):
             return f.readlines()
 
     def rename(self, old_path, new_path):
-        old_path = self._abspath(old_path)
-        new_path = self._abspath(new_path)
+        old_path = self.full_path(old_path)
+        new_path = self.full_path(new_path)
         os.rename(old_path, new_path)
 
 
@@ -102,21 +102,21 @@ class MemoryTree(BaseTree):
         self._content = content
 
     def make_subtree(self, path):
-        return type(self)(self._abspath(path), self._content)
+        return type(self)(self.full_path(path), self._content)
 
     def write_content(self, path, strings):
         """Store content from iterable of strings."""
-        tree_path = self._abspath(path)
+        tree_path = self.full_path(path)
         parent = os.path.dirname(tree_path)
         parent_content = self._content.get(parent)
         if parent_content is None:
             raise NoParent
         if parent_content is not self.DIRECTORY:
             raise ParentNotDir
-        self._content[self._abspath(path)] = ''.join(strings)
+        self._content[self.full_path(path)] = ''.join(strings)
 
     def mkdir(self, path):
-        self._content[self._abspath(path)] = self.DIRECTORY
+        self._content[self.full_path(path)] = self.DIRECTORY
 
     def rmtree(self, path):
         for key in list(self._content.keys()):
@@ -133,7 +133,7 @@ class MemoryTree(BaseTree):
     def read_content(self, path):
         """Access content as iterable of strings."""
         try:
-            content = self._content[self._abspath(path)]
+            content = self._content[self.full_path(path)]
         except KeyError:
             raise NoSuchFile
         if content is self.DIRECTORY:
@@ -141,8 +141,8 @@ class MemoryTree(BaseTree):
         return iter([content])
 
     def rename(self, old_path, new_path):
-        self._content[self._abspath(new_path)] = self._content.pop(
-                self._abspath(old_path))
+        self._content[self.full_path(new_path)] = self._content.pop(
+                self.full_path(old_path))
 
 
 class NotPending(Exception):
@@ -264,7 +264,8 @@ class TreeTransform:
         file_id = self.make_new_id(name)
         self.set_name_info(file_id, parent_id, name)
         self._new_contents.write_content(file_id, contents)
-        self._new_contents_path[file_id] = self._new_contents._abspath(file_id)
+        full_path = self._new_contents.full_path(file_id)
+        self._new_contents_path[file_id] = full_path
         return file_id
 
     def generate_renames(self):
