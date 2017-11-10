@@ -1,6 +1,8 @@
 import errno
+from itertools import count
 import os
 import random
+from shutil import rmtree
 from tempfile import mkdtemp
 
 __metaclass__ = type
@@ -65,6 +67,9 @@ class FSTree(BaseTree):
     def mkdtemp(self):
         return mkdtemp(dir=self.tree_root, prefix='transform-')
 
+    def rmtree(self, path):
+        rmtree(self._abspath(path))
+
     def read_content(self, path):
         """Store content from iterable of strings."""
         try:
@@ -113,6 +118,11 @@ class MemoryTree(BaseTree):
     def mkdir(self, path):
         self._content[self._abspath(path)] = self.DIRECTORY
 
+    def rmtree(self, path):
+        for key in list(self._content.keys()):
+            if key == path or key.startswith(path + os.sep):
+                del self._content[key]
+
     def mkdtemp(self):
         name = ''.join(random.choice('abcdefghijklmnopqrstuvwxyz')
                        for x in range(8))
@@ -140,7 +150,12 @@ class NotPending(Exception):
 
 
 class InactiveTransform:
-    """Used for member variables when the transform is inactive."""
+    """Used for member variables when the transform is inactive.
+
+    This way, we pay the cost of defending against developer error only when
+    the error is happening.  Otherwise, we do not need extra checks to see
+    whether the transform is active.
+    """
 
     def __contains__(self, x):
         raise NotPending
@@ -157,6 +172,12 @@ class InactiveTransform:
     def items(self):
         raise NotPending
 
+    def next(self):
+        raise NotPending
+
+    def __next__(self):
+        raise NotPending
+
 
 class TreeTransform:
     """Apply FS tree changes atomically.
@@ -171,8 +192,16 @@ class TreeTransform:
 
     def __init__(self, tree, write=True):
         self.tree = tree
-        self._name_info = InactiveTransform()
         self.write = write
+        self.id_counter = count()
+        self._mark_inactive()
+
+    def _mark_inactive(self):
+        self._name_info = InactiveTransform()
+        self._temp_tree = None
+        self._new_contents = None
+        self._new_contents_path = None
+        self.id_counter = InactiveTransform()
 
     def _tree_path_to_id(self, path):
         normpath = os.path.normpath(path)
@@ -184,6 +213,9 @@ class TreeTransform:
         if file_id[:2] != 'e-':
             raise ValueError('Invalid id.')
         return file_id[2:]
+
+    def make_new_id(self, name):
+        return 'n-{}-{}'.format(next(self.id_counter), name)
 
     def acquire_existing_id(self, path):
         file_id = self._tree_path_to_id(path)
@@ -228,9 +260,18 @@ class TreeTransform:
         parent_path = self.get_final_path(parent_id)
         return os.path.join(parent_path, name)
 
+    def create_file(self, name, parent_id, contents):
+        file_id = self.make_new_id(name)
+        self.set_name_info(file_id, parent_id, name)
+        self._new_contents.write_content(file_id, contents)
+        self._new_contents_path[file_id] = self._new_contents._abspath(file_id)
+        return file_id
+
     def generate_renames(self):
         for file_id, (parent_id, name) in self._name_info.items():
-            old_path = self._tree_id_to_path(file_id)
+            old_path = self._new_contents_path.get(file_id)
+            if old_path is None:
+                old_path = self._tree_id_to_path(file_id)
             new_path = self.get_final_path(file_id, parent_id, name)
             yield old_path, new_path
 
@@ -239,10 +280,16 @@ class TreeTransform:
 
     def __enter__(self):
         self._name_info = {}
+        self._temp_tree = self.tree.make_temp_tree()
+        self._temp_tree.mkdir('new')
+        self._new_contents = self._temp_tree.make_subtree('new')
+        self._new_contents_path = {}
+        self.id_counter = count()
         return self
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
         if (exc_type, exc_value, exc_traceback) == (None, None, None):
             if self.write:
                 self._apply()
-        self._name_info = InactiveTransform()
+        self.tree.rmtree(self._temp_tree.tree_root)
+        self._mark_inactive()

@@ -66,6 +66,16 @@ class TreeTestMixin:
             tree.mkdir('dir1')
             tree.write_content('dir1/foo', ['asdf'])
 
+    def test_rmtree(self):
+        with self.tree() as tree:
+            tree.mkdir('dir1')
+            tree.write_content('dir1/foo', ['asdf'])
+            tree.rmtree('dir1')
+            with self.assertRaises(NoSuchFile):
+                tree.read_content('dir1')
+            with self.assertRaises(NoSuchFile):
+                tree.read_content('dir1/foo')
+
     def test_make_subtree(self):
         with self.tree() as tree:
             tree.mkdir('dir1')
@@ -127,6 +137,14 @@ class TestTreeTransform(TestCase):
         tt = TreeTransform(mem_tree, write=False)
         with tt:
             self.assertEqual('e-file1', tt.acquire_existing_id('file1'))
+
+    def test_make_new_id(self):
+        tt = TreeTransform(MemoryTree(), write=False)
+        with self.assertRaises(NotPending):
+            tt.make_new_id('foo')
+        with tt:
+            self.assertEqual(tt.make_new_id('foo'), 'n-0-foo')
+            self.assertEqual(tt.make_new_id('foo'), 'n-1-foo')
 
     def test_get_parent(self):
         mem_tree = MemoryTree()
@@ -201,13 +219,15 @@ class TestTreeTransform(TestCase):
             dir1 = tt._tree_path_to_id('dir1')
             tt.set_name_info(file1, dir1, 'file2')
             self.assertEqual([('file1', 'dir1/file2')],
-                              list(tt.generate_renames()))
+                             list(tt.generate_renames()))
 
     def test_with(self):
         mem_tree = MemoryTree()
         mem_tree.write_content('file1', ['hello'])
         tt = TreeTransform(mem_tree)
         self.assertIs(InactiveTransform, type(tt._name_info))
+        self.assertIs(InactiveTransform, type(tt.id_counter))
+        self.assertIs(None, tt._new_contents)
         with tt:
             self.assertEqual({}, tt._name_info)
             file1 = tt.acquire_existing_id('file1')
@@ -215,14 +235,33 @@ class TestTreeTransform(TestCase):
             self.assertEqual(tt.get_final_path(file1), 'file1')
             tt.set_name_info(file1, dir1, 'file2')
         self.assertIs(InactiveTransform, type(tt._name_info))
+        self.assertIs(InactiveTransform, type(tt.id_counter))
         self.assertEqual('hello',
                          ''.join(mem_tree.read_content('dir1/file2')))
+
+    def test_subtrees(self):
+        mem_tree = MemoryTree()
+        tt = TreeTransform(mem_tree)
+        self.assertIs(None, tt._temp_tree)
+        with tt:
+            relative_root = os.path.relpath(tt._temp_tree.tree_root,
+                                            mem_tree.tree_root)
+            self.assertNotIn('..', relative_root)
+            tt._temp_tree.write_content('file1', ['hello'])
+            full_path = os.path.join(relative_root, 'file1')
+            self.assertEqual('hello',
+                             ''.join(mem_tree.read_content(full_path)))
+        self.assertIs(None, tt._temp_tree)
+        with self.assertRaises(NoSuchFile):
+            mem_tree.read_content(full_path)
 
     def test_with_exception(self):
         mem_tree = MemoryTree()
         mem_tree.write_content('file1', ['hello'])
+
         class SentryException(Exception):
             pass
+
         with self.assertRaises(SentryException):
             with TreeTransform(mem_tree) as tt:
                 file1 = tt.acquire_existing_id('file1')
@@ -231,3 +270,16 @@ class TestTreeTransform(TestCase):
                 raise SentryException
         with self.assertRaises(NoSuchFile):
             mem_tree.read_content('dir1/file2')
+
+    def test_create_file(self):
+        mem_tree = MemoryTree()
+        tt = TreeTransform(mem_tree)
+        with self.assertRaises(NotPending):
+            tt.create_file('name1', 'parent', ['hello'])
+        with tt:
+            parent_id = tt.acquire_existing_id('.')
+            file_id = tt.create_file('name1', parent_id, ['hello'])
+            source = tt._new_contents._abspath(file_id)
+            target = tt.get_final_path(file_id)
+            self.assertEqual(list(tt.generate_renames()), [(source, target)])
+        self.assertEqual('hello', ''.join(mem_tree.read_content('name1')))
