@@ -6,7 +6,13 @@ from unittest import TestCase
 
 from tree_transform.tree_transform import (
     FSTree,
+    InactiveTransform,
+    IsDirectory,
     MemoryTree,
+    NotPending,
+    NoParent,
+    NoSuchFile,
+    ParentNotDir,
     TreeTransform,
     )
 
@@ -22,10 +28,32 @@ def temp_dir():
 
 class TreeTestMixin:
 
+    def test_read_content_no_file(self):
+        with self.tree() as tree:
+            with self.assertRaises(NoSuchFile):
+                tree.read_content('foo')
+
+    def test_read_content_directory(self):
+        with self.tree() as tree:
+            tree.mkdir('foo')
+            with self.assertRaises(IsDirectory):
+                tree.read_content('foo')
+
     def test_write_content(self):
         with self.tree() as tree:
             tree.write_content('foo', ['asdf'])
             self.assertEqual(''.join(tree.read_content('foo')), 'asdf')
+
+    def test_write_content_no_parent(self):
+        with self.tree() as tree:
+            with self.assertRaises(NoParent):
+                tree.write_content('non-existent/foo', ['asdf'])
+
+    def test_write_content_parent_not_dir(self):
+        with self.tree() as tree:
+            with self.assertRaises(ParentNotDir):
+                tree.write_content('file', ['asdf'])
+                tree.write_content('file/foo', ['asdf'])
 
     def test_rename(self):
         with self.tree() as tree:
@@ -89,51 +117,117 @@ class TestTreeTransform(TestCase):
     def test__tree_id_to_path(self):
         tt = TreeTransform(MemoryTree())
         self.assertEqual('hello', tt._tree_id_to_path('e-hello'))
-        with self.assertRaisesRegexp(ValueError, 'Invalid path.'):
+        with self.assertRaisesRegexp(ValueError, 'Invalid id.'):
             tt._tree_id_to_path('ehello')
-        with self.assertRaisesRegexp(ValueError, 'Invalid path.'):
+        with self.assertRaisesRegexp(ValueError, 'Invalid id.'):
             tt._tree_id_to_path('-hello')
 
     def test_get_existing_id(self):
         mem_tree = MemoryTree()
-        tt = TreeTransform(mem_tree)
-        self.assertEqual('e-file1', tt.acquire_existing_id('file1'))
+        tt = TreeTransform(mem_tree, write=False)
+        with tt:
+            self.assertEqual('e-file1', tt.acquire_existing_id('file1'))
 
-    def test_get_name_info(self):
+    def test_get_parent(self):
         mem_tree = MemoryTree()
-        tt = TreeTransform(mem_tree)
-        file1 = tt.acquire_existing_id('file1')
-        parent, name = tt.get_name_info(file1)
-        self.assertEqual(parent, tt._tree_path_to_id('.'))
-        self.assertEqual(name, 'file1')
+        tt = TreeTransform(mem_tree, write=False)
+        with self.assertRaises(NotPending):
+            parent = tt.get_parent('e-file1')
+        with tt:
+            file1 = tt.acquire_existing_id('file1')
+            parent = tt.get_parent(file1)
+            self.assertEqual(parent, tt._tree_path_to_id('.'))
+            root = tt.acquire_existing_id('.')
+            with self.assertRaises(KeyError):
+                parent = tt.get_parent(root)
+
+    def test_get_name(self):
+        mem_tree = MemoryTree()
+        tt = TreeTransform(mem_tree, write=False)
+        with self.assertRaises(NotPending):
+            tt.get_name('file1')
+        with tt:
+            file1 = tt.acquire_existing_id('file1')
+            name = tt.get_name(file1)
+            self.assertEqual(name, 'file1')
+            root = tt.acquire_existing_id('.')
+            with self.assertRaises(KeyError):
+                tt.get_name(root)
 
     def test_set_name_info(self):
         mem_tree = MemoryTree()
-        tt = TreeTransform(mem_tree)
-        file1 = tt.acquire_existing_id('file1')
-        dir1 = tt._tree_path_to_id('dir1')
-        tt.set_name_info(file1, dir1, 'file2')
-        parent, name = tt.get_name_info(file1)
-        self.assertEqual(parent, dir1)
-        self.assertEqual(name, 'file2')
+        tt = TreeTransform(mem_tree, write=False)
+        with self.assertRaises(NotPending):
+            tt.set_name_info('foo', 'bar', 'file2')
+        with tt:
+            file1 = tt.acquire_existing_id('file1')
+            dir1 = tt._tree_path_to_id('dir1')
+            tt.set_name_info(file1, dir1, 'file2')
+            self.assertEqual(tt.get_parent(file1), dir1)
+            self.assertEqual(tt.get_name(file1), 'file2')
 
     def test_get_final_path(self):
         mem_tree = MemoryTree()
-        tt = TreeTransform(mem_tree)
-        file1 = tt.acquire_existing_id('file1')
-        dir1 = tt._tree_path_to_id('dir1')
-        self.assertEqual(tt.get_final_path(file1), 'file1')
-        tt.set_name_info(file1, dir1, 'file2')
-        self.assertEqual(tt.get_final_path(file1), 'dir1/file2')
+        tt = TreeTransform(mem_tree, write=False)
+        with self.assertRaises(NotPending):
+            tt.get_final_path('file1')
+        with tt:
+            file1 = tt.acquire_existing_id('file1')
+            dir1 = tt._tree_path_to_id('dir1')
+            self.assertEqual(tt.get_final_path(file1), 'file1')
+            tt.set_name_info(file1, dir1, 'file2')
+            self.assertEqual(tt.get_final_path(file1), 'dir1/file2')
 
-    def test_apply(self):
+    def test__apply(self):
+        mem_tree = MemoryTree()
+        mem_tree.write_content('file1', ['hello'])
+        tt = TreeTransform(mem_tree, write=False)
+        with self.assertRaises(NotPending):
+            tt._apply()
+        with tt:
+            file1 = tt.acquire_existing_id('file1')
+            dir1 = tt._tree_path_to_id('dir1')
+            self.assertEqual(tt.get_final_path(file1), 'file1')
+            tt.set_name_info(file1, dir1, 'file2')
+            tt._apply()
+            self.assertEqual('hello',
+                             ''.join(mem_tree.read_content('dir1/file2')))
+
+    def test_generate_renames(self):
+        mem_tree = MemoryTree()
+        tt = TreeTransform(mem_tree, write=False)
+        with tt:
+            file1 = tt.acquire_existing_id('file1')
+            dir1 = tt._tree_path_to_id('dir1')
+            tt.set_name_info(file1, dir1, 'file2')
+            self.assertEqual([('file1', 'dir1/file2')],
+                              list(tt.generate_renames()))
+
+    def test_with(self):
         mem_tree = MemoryTree()
         mem_tree.write_content('file1', ['hello'])
         tt = TreeTransform(mem_tree)
-        file1 = tt.acquire_existing_id('file1')
-        dir1 = tt._tree_path_to_id('dir1')
-        self.assertEqual(tt.get_final_path(file1), 'file1')
-        tt.set_name_info(file1, dir1, 'file2')
-        tt.apply()
+        self.assertIs(InactiveTransform, type(tt._name_info))
+        with tt:
+            self.assertEqual({}, tt._name_info)
+            file1 = tt.acquire_existing_id('file1')
+            dir1 = tt._tree_path_to_id('dir1')
+            self.assertEqual(tt.get_final_path(file1), 'file1')
+            tt.set_name_info(file1, dir1, 'file2')
+        self.assertIs(InactiveTransform, type(tt._name_info))
         self.assertEqual('hello',
                          ''.join(mem_tree.read_content('dir1/file2')))
+
+    def test_with_exception(self):
+        mem_tree = MemoryTree()
+        mem_tree.write_content('file1', ['hello'])
+        class SentryException(Exception):
+            pass
+        with self.assertRaises(SentryException):
+            with TreeTransform(mem_tree) as tt:
+                file1 = tt.acquire_existing_id('file1')
+                dir1 = tt._tree_path_to_id('dir1')
+                tt.set_name_info(file1, dir1, 'file2')
+                raise SentryException
+        with self.assertRaises(NoSuchFile):
+            mem_tree.read_content('dir1/file2')
