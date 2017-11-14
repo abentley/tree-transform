@@ -324,3 +324,23 @@ class TestTreeTransform(TestCase):
             target = tt.get_final_path(file_id)
             self.assertEqual(tt.generate_renames(), [(source, target)])
         self.assertEqual('hello', ''.join(mem_tree.read_content('name1')))
+
+    def test_delete(self):
+        mem_tree = MemoryTree()
+        mem_tree.write_content('foo', ['hello'])
+        mem_tree.mkdir('bar')
+        tt = TreeTransform(mem_tree)
+        with self.assertRaises(NotPending):
+            tt.delete('e-foo')
+        with tt:
+            tt.delete(tt.acquire_existing_id('foo'))
+            tt.delete(tt.acquire_existing_id('bar'))
+            mem_tree.read_content('foo')
+            with self.assertRaises(IsDirectory):
+                mem_tree.read_content('bar')
+        with self.assertRaises(NotPending):
+            tt.delete('e-foo')
+        with self.assertRaises(NoSuchFile):
+            mem_tree.read_content('foo')
+        with self.assertRaises(NoSuchFile):
+            mem_tree.read_content('bar')

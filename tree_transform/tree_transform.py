@@ -191,6 +191,9 @@ class InactiveTransform:
     def __next__(self):
         raise NotPending
 
+    def add(self, key):
+        raise NotPending
+
 
 class TreeTransform:
     """Apply FS tree changes atomically.
@@ -215,6 +218,26 @@ class TreeTransform:
         self._new_contents = None
         self._new_contents_path = InactiveTransform()
         self.id_counter = InactiveTransform()
+        self._remove_ids = InactiveTransform()
+
+    def __enter__(self):
+        self._name_info = {}
+        self._temp_tree = self.tree.make_temp_tree()
+        self._temp_tree.mkdir('new')
+        self._new_contents = self._temp_tree.make_subtree('new')
+        self._new_contents_path = {}
+        self._temp_tree.mkdir('old')
+        self._old_contents = self._temp_tree.make_subtree('old')
+        self._remove_ids = set()
+        self.id_counter = count()
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        if (exc_type, exc_value, exc_traceback) == (None, None, None):
+            if self.write:
+                self.tree.apply_renames(self.generate_renames())
+        self.tree.rmtree(self._temp_tree.tree_root)
+        self._mark_inactive()
 
     def _tree_path_to_id(self, path):
         normpath = os.path.normpath(path)
@@ -281,18 +304,34 @@ class TreeTransform:
         self._new_contents_path[file_id] = full_path
         return file_id
 
+    def delete(self, file_id):
+        """Schedule a path to be deleted.
+
+        The file will be moved to the old_contents subtree on apply, and then
+        deleted with the rest of the temp dir on __exit__.
+        """
+        self._remove_ids.add(file_id)
+
     def _generate_remove_renames(self):
         remove_renames = []
         new_contents_path = dict(self._new_contents_path)
         relative_new_contents = os.path.relpath(self._new_contents.tree_root,
                                                 self.tree.tree_root)
+        relative_old_contents = os.path.relpath(self._old_contents.tree_root,
+                                                self.tree.tree_root)
         for file_id, (parent_id, name) in self._name_info.items():
             if file_id in self._new_contents_path:
+                continue
+            if file_id in self._remove_ids:
                 continue
             old_path = self._tree_id_to_path(file_id)
             new_path = os.path.join(relative_new_contents, file_id)
             remove_renames.append((old_path, new_path))
             new_contents_path[file_id] = new_path
+        for file_id in self._remove_ids:
+            old_path = self._tree_id_to_path(file_id)
+            new_path = os.path.join(relative_old_contents, file_id)
+            remove_renames.append((old_path, new_path))
         # Always remove children before parents
         remove_renames.sort(key=lambda p: p[0], reverse=True)
         return remove_renames, new_contents_path
@@ -300,7 +339,9 @@ class TreeTransform:
     def _generate_insert_renames(self, new_contents_path):
         insert_renames = []
         for file_id, (parent_id, name) in self._name_info.items():
-            old_path = new_contents_path[file_id]
+            old_path = new_contents_path.get(file_id)
+            if old_path is None:
+                continue
             new_path = self.get_final_path(file_id, parent_id, name)
             insert_renames.append((old_path, new_path))
         insert_renames.sort(key=lambda p: p[1])
@@ -322,19 +363,3 @@ class TreeTransform:
         remove_renames, new_contents_path = self._generate_remove_renames()
         insert_renames = self._generate_insert_renames(new_contents_path)
         return remove_renames + insert_renames
-
-    def __enter__(self):
-        self._name_info = {}
-        self._temp_tree = self.tree.make_temp_tree()
-        self._temp_tree.mkdir('new')
-        self._new_contents = self._temp_tree.make_subtree('new')
-        self._new_contents_path = {}
-        self.id_counter = count()
-        return self
-
-    def __exit__(self, exc_type, exc_value, exc_traceback):
-        if (exc_type, exc_value, exc_traceback) == (None, None, None):
-            if self.write:
-                self.tree.apply_renames(self.generate_renames())
-        self.tree.rmtree(self._temp_tree.tree_root)
-        self._mark_inactive()
