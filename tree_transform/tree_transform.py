@@ -98,21 +98,19 @@ class FSTree(BaseTree):
                 raise
 
 
-class MemoryTree(BaseTree):
-    """Represents a filesystem tree in memory."""
+class MemoryFileStore:
+    """Represents a key/value file store (blob store) in memory.
+
+    This does not enforce filesystem restrictions like the idea that every file
+    must have a parent directory.
+    """
 
     DIRECTORY = object()
 
-    def __init__(self, tree_root='', content=None):
-        super(MemoryTree, self).__init__(tree_root)
-        if content is None:
-            content = {tree_root: self.DIRECTORY}
+    def __init__(self, content):
         self._content = content
 
-    def make_subtree(self, path):
-        return type(self)(self.full_path(path), self._content)
-
-    def _require_parent(self, full_path):
+    def require_parent(self, full_path):
         parent = os.path.dirname(full_path)
         parent_content = self._content.get(parent)
         if parent_content is None:
@@ -120,19 +118,56 @@ class MemoryTree(BaseTree):
         if parent_content is not self.DIRECTORY:
             raise ParentNotDir
 
+    def write_content(self, full_path, strings):
+        """Store content from iterable of strings."""
+        self._content[full_path] = ''.join(strings)
+
+    def mkdir(self, full_path):
+        self._content[full_path] = self.DIRECTORY
+
+    def read_content(self, full_path):
+        """Access content as iterable of strings."""
+        try:
+            content = self._content[full_path]
+        except KeyError:
+            raise NoSuchFile
+        if content is self.DIRECTORY:
+            raise IsDirectory
+        return iter([content])
+
+    def rmtree(self, full_path):
+        for key in list(self._content.keys()):
+            if key == full_path or key.startswith(full_path + os.sep):
+                del self._content[key]
+
+    def rename(self, old_path, new_path):
+        self._content[new_path] = self._content.pop(old_path)
+
+
+class MemoryTree(BaseTree):
+    """Represents a filesystem tree in memory."""
+
+    def __init__(self, tree_root='', file_store=None):
+        super(MemoryTree, self).__init__(tree_root)
+        if file_store is None:
+            content = {tree_root: MemoryFileStore.DIRECTORY}
+            file_store = MemoryFileStore(content)
+        self._file_store = file_store
+
+    def make_subtree(self, path):
+        return type(self)(self.full_path(path), self._file_store)
+
     def write_content(self, path, strings):
         """Store content from iterable of strings."""
         full_path = self.full_path(path)
-        self._require_parent(full_path)
-        self._content[full_path] = ''.join(strings)
+        self._file_store.require_parent(full_path)
+        return self._file_store.write_content(full_path, strings)
 
     def mkdir(self, path):
-        self._content[self.full_path(path)] = self.DIRECTORY
+        return self._file_store.mkdir(self.full_path(path))
 
     def rmtree(self, path):
-        for key in list(self._content.keys()):
-            if key == path or key.startswith(path + os.sep):
-                del self._content[key]
+        return self._file_store.rmtree(path)
 
     def mkdtemp(self):
         name = ''.join(random.choice('abcdefghijklmnopqrstuvwxyz')
@@ -143,19 +178,12 @@ class MemoryTree(BaseTree):
 
     def read_content(self, path):
         """Access content as iterable of strings."""
-        try:
-            content = self._content[self.full_path(path)]
-        except KeyError:
-            raise NoSuchFile
-        if content is self.DIRECTORY:
-            raise IsDirectory
-        return iter([content])
+        return self._file_store.read_content(self.full_path(path))
 
     def rename(self, old_path, new_path):
-        full_path = self.full_path(new_path)
-        self._require_parent(full_path)
-        self._content[full_path] = self._content.pop(
-                self.full_path(old_path))
+        full_new_path = self.full_path(new_path)
+        self._file_store.require_parent(full_new_path)
+        self._file_store.rename(self.full_path(old_path), full_new_path)
 
 
 class NotPending(Exception):
