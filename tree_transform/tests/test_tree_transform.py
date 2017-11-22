@@ -8,7 +8,7 @@ from tree_transform.tree_transform import (
     FSTree,
     InactiveTransform,
     IsDirectory,
-    MemoryTree,
+    StoreTree,
     NotPending,
     NoParent,
     NoSuchFile,
@@ -27,139 +27,183 @@ def temp_dir():
         rmtree(temp)
 
 
-class TreeTestMixin:
+class ReadOnlyTreeTestMixin:
 
     def test_read_content_no_file(self):
-        with self.tree() as tree:
+        with self.setup_tree() as tree:
             with self.assertRaises(NoSuchFile):
-                tree.read_content('foo')
+                self.actual_tree(tree).read_content('foo')
 
     def test_read_content_directory(self):
-        with self.tree() as tree:
+        with self.setup_tree() as tree:
             tree.mkdir('foo')
             with self.assertRaises(IsDirectory):
-                tree.read_content('foo')
+                self.actual_tree(tree).read_content('foo')
+
+
+class TreeTestMixin(ReadOnlyTreeTestMixin):
 
     def test_write_content(self):
-        with self.tree() as tree:
+        with self.setup_tree() as tree:
             tree.write_content('foo', ['asdf'])
             self.assertEqual(''.join(tree.read_content('foo')), 'asdf')
 
     def test_write_content_no_parent(self):
-        with self.tree() as tree:
+        with self.setup_tree() as tree:
             with self.assertRaises(NoParent):
-                tree.write_content('non-existent/foo', ['asdf'])
+                actual = self.actual_tree(tree)
+                actual.write_content('non-existent/foo', ['asdf'])
 
     def test_write_content_parent_not_dir(self):
-        with self.tree() as tree:
+        with self.setup_tree() as tree:
+            tree.write_content('file', ['asdf'])
+            actual = self.actual_tree(tree)
             with self.assertRaises(ParentNotDir):
-                tree.write_content('file', ['asdf'])
-                tree.write_content('file/foo', ['asdf'])
+                actual.write_content('file/foo', ['asdf'])
 
     def test_rename(self):
-        with self.tree() as tree:
+        with self.setup_tree() as tree:
             tree.write_content('foo', ['asdf'])
-            tree.rename('foo', 'bar')
-            self.assertEqual(''.join(tree.read_content('bar')), 'asdf')
+            actual = self.actual_tree(tree)
+            actual.rename('foo', 'bar')
+            self.assertEqual(''.join(actual.read_content('bar')), 'asdf')
 
     def test_rename_dir(self):
-        with self.tree() as tree:
+        with self.setup_tree() as tree:
             tree.write_content('foo', ['asdf'])
             tree.mkdir('bar')
-            tree.rename('foo', 'bar/foo')
-            self.assertEqual(''.join(tree.read_content('bar/foo')), 'asdf')
+            actual = self.actual_tree(tree)
+            actual.rename('foo', 'bar/foo')
+            self.assertEqual(''.join(actual.read_content('bar/foo')), 'asdf')
 
     def test_rename_dir_missing(self):
-        with self.tree() as tree:
+        with self.setup_tree() as tree:
             tree.write_content('foo', ['asdf'])
+            actual = self.actual_tree(tree)
             with self.assertRaises(NoParent):
-                tree.rename('foo', 'bar/foo')
+                actual.rename('foo', 'bar/foo')
 
     def test_rename_parent_not_dir(self):
-        with self.tree() as tree:
+        with self.setup_tree() as tree:
             tree.write_content('foo', ['asdf'])
             tree.write_content('bar', ['asdf'])
+            actual = self.actual_tree(tree)
             with self.assertRaises(ParentNotDir):
-                tree.rename('foo', 'bar/foo')
+                actual.rename('foo', 'bar/foo')
+
+    def test_mkdir(self):
+        with self.setup_tree() as tree:
+            actual = self.actual_tree(tree)
+            actual.mkdir('dir1')
+            actual.write_content('dir1/foo', ['asdf'])
+
+    def test_rmtree(self):
+        with self.setup_tree() as tree:
+            tree.mkdir('dir1')
+            tree.write_content('dir1/foo', ['asdf'])
+            actual = self.actual_tree(tree)
+            actual.rmtree('dir1')
+            with self.assertRaises(NoSuchFile):
+                actual.read_content('dir1')
+            with self.assertRaises(NoSuchFile):
+                actual.read_content('dir1/foo')
 
     def test_apply_renames(self):
-        with self.tree() as tree:
+        with self.setup_tree() as tree:
             tree.write_content('file1', ['hello'])
             tree.mkdir('dir1')
-            tt = TreeTransform(tree, write=False)
+            actual = self.actual_tree(tree)
+            tt = TreeTransform(actual, write=False)
             with tt:
                 file1 = tt.acquire_existing_id('file1')
                 dir1 = tt._tree_path_to_id('dir1')
                 self.assertEqual(tt.get_final_path(file1), 'file1')
                 tt.set_name_info(file1, dir1, 'file2')
-                tree.apply_renames(tt.generate_renames())
+                actual.apply_renames(tt.generate_renames())
                 self.assertEqual('hello',
-                                 ''.join(tree.read_content('dir1/file2')))
-
-    def test_mkdir(self):
-        with self.tree() as tree:
-            tree.mkdir('dir1')
-            tree.write_content('dir1/foo', ['asdf'])
-
-    def test_rmtree(self):
-        with self.tree() as tree:
-            tree.mkdir('dir1')
-            tree.write_content('dir1/foo', ['asdf'])
-            tree.rmtree('dir1')
-            with self.assertRaises(NoSuchFile):
-                tree.read_content('dir1')
-            with self.assertRaises(NoSuchFile):
-                tree.read_content('dir1/foo')
+                                 ''.join(actual.read_content('dir1/file2')))
 
     def test_make_subtree(self):
-        with self.tree() as tree:
+        with self.setup_tree() as tree:
             tree.mkdir('dir1')
-            subtree = tree.make_subtree('dir1')
+            actual = self.actual_tree(tree)
+            subtree = actual.make_subtree('dir1')
             subtree.write_content('foo', ['asdf'])
-            self.assertEqual(''.join(tree.read_content('dir1/foo')), 'asdf')
+            self.assertEqual(''.join(actual.read_content('dir1/foo')), 'asdf')
 
     def test_make_temp_tree(self):
-        with self.tree() as tree:
-            temp_tree = tree.make_temp_tree()
-            relpath = os.path.relpath(temp_tree.tree_root, tree.tree_root)
+        with self.setup_tree() as tree:
+            actual = self.actual_tree(tree)
+            temp_tree = actual.make_temp_tree()
+            relpath = os.path.relpath(temp_tree.tree_root, actual.tree_root)
             self.assertNotIn('..', relpath)
             temp_tree.write_content('n-foo', ['asdf'])
-            tree.rename(temp_tree.full_path('n-foo'), 'f-foo')
-            self.assertEqual(''.join(tree.read_content('f-foo')), 'asdf')
+            actual.rename(temp_tree.full_path('n-foo'), 'f-foo')
+            self.assertEqual(''.join(actual.read_content('f-foo')), 'asdf')
 
     def test_mkdtemp(self):
-        with self.tree() as tree:
-            name = tree.mkdtemp()
+        with self.setup_tree() as tree:
+            actual = self.actual_tree(tree)
+            name = actual.mkdtemp()
             self.assertRegexpMatches(name, 'transform-')
 
 
-class TestMemoryTree(TestCase, TreeTestMixin):
+class TestReadOnlyStoreTree(TestCase, ReadOnlyTreeTestMixin):
 
     @contextmanager
-    def tree(self):
-        yield MemoryTree()
+    def setup_tree(self):
+        yield StoreTree()
+
+    def actual_tree(self, tree):
+        return tree.readonly_version()
+
+
+class TestStoreTree(TestCase, TreeTestMixin):
+
+    @contextmanager
+    def setup_tree(self):
+        yield StoreTree()
+
+    def actual_tree(self, tree):
+        return tree
 
 
 class TestOverlayTree(TestCase, TreeTestMixin):
 
     @contextmanager
-    def tree(self):
-        with temp_dir() as tree_root:
-            yield MemoryTree(file_store=OverlayFileStore(FSTree(tree_root)))
+    def setup_tree(self):
+        yield StoreTree()
+
+    def actual_tree(self, tree):
+        return StoreTree(file_store=OverlayFileStore(tree.readonly_version()))
+
+
+class TestOverlayOnlyTree(TestCase, TreeTestMixin):
+
+    @contextmanager
+    def setup_tree(self):
+        base = StoreTree().readonly_version()
+        yield StoreTree(file_store=OverlayFileStore(base))
+
+    def actual_tree(self, tree):
+        return tree
 
 
 class TestFSTree(TestCase, TreeTestMixin):
 
     @contextmanager
-    def tree(self):
+    def setup_tree(self):
         with temp_dir() as tree_root:
             yield FSTree(tree_root)
+
+    def actual_tree(self, tree):
+        return tree
 
 
 class TestTreeTransform(TestCase):
 
     def test__tree_path_to_id(self):
-        tt = TreeTransform(MemoryTree())
+        tt = TreeTransform(StoreTree())
         self.assertEqual('e-.', tt._tree_path_to_id('.'))
         self.assertEqual('e-.', tt._tree_path_to_id('foo/..'))
         with self.assertRaisesRegexp(ValueError, 'Path outside tree.'):
@@ -168,7 +212,7 @@ class TestTreeTransform(TestCase):
             tt._tree_path_to_id('foo/../..')
 
     def test__tree_id_to_path(self):
-        tt = TreeTransform(MemoryTree())
+        tt = TreeTransform(StoreTree())
         self.assertEqual('hello', tt._tree_id_to_path('e-hello'))
         with self.assertRaisesRegexp(ValueError, 'Invalid id.'):
             tt._tree_id_to_path('ehello')
@@ -176,13 +220,13 @@ class TestTreeTransform(TestCase):
             tt._tree_id_to_path('-hello')
 
     def test_get_existing_id(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         tt = TreeTransform(mem_tree, write=False)
         with tt:
             self.assertEqual('e-file1', tt.acquire_existing_id('file1'))
 
     def test_make_new_id(self):
-        tt = TreeTransform(MemoryTree(), write=False)
+        tt = TreeTransform(StoreTree(), write=False)
         with self.assertRaises(NotPending):
             tt.make_new_id('foo')
         with tt:
@@ -190,7 +234,7 @@ class TestTreeTransform(TestCase):
             self.assertEqual(tt.make_new_id('foo'), 'n-1-foo')
 
     def test_get_parent(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         tt = TreeTransform(mem_tree, write=False)
         with self.assertRaises(NotPending):
             parent = tt.get_parent('e-file1')
@@ -203,7 +247,7 @@ class TestTreeTransform(TestCase):
                 parent = tt.get_parent(root)
 
     def test_get_name(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         tt = TreeTransform(mem_tree, write=False)
         with self.assertRaises(NotPending):
             tt.get_name('file1')
@@ -216,7 +260,7 @@ class TestTreeTransform(TestCase):
                 tt.get_name(root)
 
     def test_set_name_info(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         tt = TreeTransform(mem_tree, write=False)
         with self.assertRaises(NotPending):
             tt.set_name_info('foo', 'bar', 'file2')
@@ -228,7 +272,7 @@ class TestTreeTransform(TestCase):
             self.assertEqual(tt.get_name(file1), 'file2')
 
     def test_get_final_path(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         tt = TreeTransform(mem_tree, write=False)
         with self.assertRaises(NotPending):
             tt.get_final_path('file1')
@@ -240,7 +284,7 @@ class TestTreeTransform(TestCase):
             self.assertEqual(tt.get_final_path(file1), 'dir1/file2')
 
     def test_generate_renames(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         tt = TreeTransform(mem_tree, write=False)
         with tt:
             file1 = tt.acquire_existing_id('file1')
@@ -253,7 +297,7 @@ class TestTreeTransform(TestCase):
                 tt.generate_renames())
 
     def test_generate_renames_dir_swap(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         tt = TreeTransform(mem_tree, write=False)
         with tt:
             dir1 = tt._tree_path_to_id('dir1')
@@ -271,7 +315,7 @@ class TestTreeTransform(TestCase):
                 tt.generate_renames())
 
     def test_with(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         mem_tree.write_content('file1', ['hello'])
         mem_tree.mkdir('dir1')
         tt = TreeTransform(mem_tree)
@@ -290,7 +334,7 @@ class TestTreeTransform(TestCase):
                          ''.join(mem_tree.read_content('dir1/file2')))
 
     def test_subtrees(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         tt = TreeTransform(mem_tree)
         self.assertIs(None, tt._temp_tree)
         with tt:
@@ -306,7 +350,7 @@ class TestTreeTransform(TestCase):
             mem_tree.read_content(full_path)
 
     def test_with_exception(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         mem_tree.write_content('file1', ['hello'])
 
         class SentryException(Exception):
@@ -322,7 +366,7 @@ class TestTreeTransform(TestCase):
             mem_tree.read_content('dir1/file2')
 
     def test_create_file(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         tt = TreeTransform(mem_tree)
         with self.assertRaises(NotPending):
             tt.create_file('name1', 'parent', ['hello'])
@@ -335,7 +379,7 @@ class TestTreeTransform(TestCase):
         self.assertEqual('hello', ''.join(mem_tree.read_content('name1')))
 
     def test_delete(self):
-        mem_tree = MemoryTree()
+        mem_tree = StoreTree()
         mem_tree.write_content('foo', ['hello'])
         mem_tree.mkdir('bar')
         tt = TreeTransform(mem_tree)
