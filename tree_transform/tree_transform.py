@@ -53,6 +53,10 @@ class FSTree(BaseTree):
     def make_subtree(self, path):
         return type(self)(self.full_path(path))
 
+    def readonly_version(self):
+        # Not yet supported...
+        return self
+
     def write_content(self, path, strings):
         """Store content from iterable of strings."""
         try:
@@ -261,6 +265,13 @@ class ReadOnlyStoreTree(BaseTree):
     def get_type_mode(self, path):
         return self._file_store.get_type_mode(self.full_path(path))
 
+    def make_subtree(self, path):
+        return type(self)(self.full_path(path), self._file_store)
+
+    def readonly_version(self):
+        # Can't get more read-only...
+        return self
+
 
 class StoreTree(ReadOnlyStoreTree):
     """Represents a filesystem tree in memory."""
@@ -270,9 +281,6 @@ class StoreTree(ReadOnlyStoreTree):
             content = {tree_root: MemoryFileStore.DIRECTORY}
             file_store = MemoryFileStore(content)
         super(StoreTree, self).__init__(tree_root, file_store)
-
-    def make_subtree(self, path):
-        return type(self)(self.full_path(path), self._file_store)
 
     def readonly_version(self):
         return ReadOnlyStoreTree(self.tree_root, self._file_store)

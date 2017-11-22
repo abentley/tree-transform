@@ -40,6 +40,23 @@ class ReadOnlyTreeTestMixin:
             with self.assertRaises(IsDirectory):
                 self.actual_tree(tree).read_content('foo')
 
+    def test_make_subtree(self):
+        with self.setup_tree() as tree:
+            tree.mkdir('dir1')
+            actual = self.actual_tree(tree)
+            subtree = actual.make_subtree('dir1')
+            tree.write_content('dir1/foo', ['asdf'])
+            self.assertEqual(''.join(subtree.read_content('foo')), 'asdf')
+
+    def test_make_readonly_version(self):
+        with self.setup_tree() as tree:
+            tree.mkdir('dir1')
+            actual = self.actual_tree(tree)
+            readonly = actual.readonly_version()
+            tree.write_content('dir1/foo', ['asdf'])
+            self.assertEqual(''.join(readonly.read_content('dir1/foo')),
+                             'asdf')
+
 
 class TreeTestMixin(ReadOnlyTreeTestMixin):
 
@@ -123,7 +140,7 @@ class TreeTestMixin(ReadOnlyTreeTestMixin):
                 self.assertEqual('hello',
                                  ''.join(actual.read_content('dir1/file2')))
 
-    def test_make_subtree(self):
+    def test_make_writable_subtree(self):
         with self.setup_tree() as tree:
             tree.mkdir('dir1')
             actual = self.actual_tree(tree)
@@ -220,8 +237,8 @@ class TestTreeTransform(TestCase):
             tt._tree_id_to_path('-hello')
 
     def test_get_existing_id(self):
-        mem_tree = StoreTree()
-        tt = TreeTransform(mem_tree, write=False)
+        store_tree = StoreTree()
+        tt = TreeTransform(store_tree, write=False)
         with tt:
             self.assertEqual('e-file1', tt.acquire_existing_id('file1'))
 
@@ -234,8 +251,8 @@ class TestTreeTransform(TestCase):
             self.assertEqual(tt.make_new_id('foo'), 'n-1-foo')
 
     def test_get_parent(self):
-        mem_tree = StoreTree()
-        tt = TreeTransform(mem_tree, write=False)
+        store_tree = StoreTree()
+        tt = TreeTransform(store_tree, write=False)
         with self.assertRaises(NotPending):
             parent = tt.get_parent('e-file1')
         with tt:
@@ -247,8 +264,8 @@ class TestTreeTransform(TestCase):
                 parent = tt.get_parent(root)
 
     def test_get_name(self):
-        mem_tree = StoreTree()
-        tt = TreeTransform(mem_tree, write=False)
+        store_tree = StoreTree()
+        tt = TreeTransform(store_tree, write=False)
         with self.assertRaises(NotPending):
             tt.get_name('file1')
         with tt:
@@ -260,8 +277,8 @@ class TestTreeTransform(TestCase):
                 tt.get_name(root)
 
     def test_set_name_info(self):
-        mem_tree = StoreTree()
-        tt = TreeTransform(mem_tree, write=False)
+        store_tree = StoreTree()
+        tt = TreeTransform(store_tree, write=False)
         with self.assertRaises(NotPending):
             tt.set_name_info('foo', 'bar', 'file2')
         with tt:
@@ -272,8 +289,8 @@ class TestTreeTransform(TestCase):
             self.assertEqual(tt.get_name(file1), 'file2')
 
     def test_get_final_path(self):
-        mem_tree = StoreTree()
-        tt = TreeTransform(mem_tree, write=False)
+        store_tree = StoreTree()
+        tt = TreeTransform(store_tree, write=False)
         with self.assertRaises(NotPending):
             tt.get_final_path('file1')
         with tt:
@@ -284,8 +301,8 @@ class TestTreeTransform(TestCase):
             self.assertEqual(tt.get_final_path(file1), 'dir1/file2')
 
     def test_generate_renames(self):
-        mem_tree = StoreTree()
-        tt = TreeTransform(mem_tree, write=False)
+        store_tree = StoreTree()
+        tt = TreeTransform(store_tree, write=False)
         with tt:
             file1 = tt.acquire_existing_id('file1')
             dir1 = tt._tree_path_to_id('dir1')
@@ -297,8 +314,8 @@ class TestTreeTransform(TestCase):
                 tt.generate_renames())
 
     def test_generate_renames_dir_swap(self):
-        mem_tree = StoreTree()
-        tt = TreeTransform(mem_tree, write=False)
+        store_tree = StoreTree()
+        tt = TreeTransform(store_tree, write=False)
         with tt:
             dir1 = tt._tree_path_to_id('dir1')
             dir2 = tt._tree_path_to_id('dir1/dir2')
@@ -315,10 +332,10 @@ class TestTreeTransform(TestCase):
                 tt.generate_renames())
 
     def test_with(self):
-        mem_tree = StoreTree()
-        mem_tree.write_content('file1', ['hello'])
-        mem_tree.mkdir('dir1')
-        tt = TreeTransform(mem_tree)
+        store_tree = StoreTree()
+        store_tree.write_content('file1', ['hello'])
+        store_tree.mkdir('dir1')
+        tt = TreeTransform(store_tree)
         self.assertIs(InactiveTransform, type(tt._name_info))
         self.assertIs(InactiveTransform, type(tt.id_counter))
         self.assertIs(None, tt._new_contents)
@@ -331,43 +348,43 @@ class TestTreeTransform(TestCase):
         self.assertIs(InactiveTransform, type(tt._name_info))
         self.assertIs(InactiveTransform, type(tt.id_counter))
         self.assertEqual('hello',
-                         ''.join(mem_tree.read_content('dir1/file2')))
+                         ''.join(store_tree.read_content('dir1/file2')))
 
     def test_subtrees(self):
-        mem_tree = StoreTree()
-        tt = TreeTransform(mem_tree)
+        store_tree = StoreTree()
+        tt = TreeTransform(store_tree)
         self.assertIs(None, tt._temp_tree)
         with tt:
             relative_root = os.path.relpath(tt._temp_tree.tree_root,
-                                            mem_tree.tree_root)
+                                            store_tree.tree_root)
             self.assertNotIn('..', relative_root)
             tt._temp_tree.write_content('file1', ['hello'])
             full_path = os.path.join(relative_root, 'file1')
             self.assertEqual('hello',
-                             ''.join(mem_tree.read_content(full_path)))
+                             ''.join(store_tree.read_content(full_path)))
         self.assertIs(None, tt._temp_tree)
         with self.assertRaises(NoSuchFile):
-            mem_tree.read_content(full_path)
+            store_tree.read_content(full_path)
 
     def test_with_exception(self):
-        mem_tree = StoreTree()
-        mem_tree.write_content('file1', ['hello'])
+        store_tree = StoreTree()
+        store_tree.write_content('file1', ['hello'])
 
         class SentryException(Exception):
             pass
 
         with self.assertRaises(SentryException):
-            with TreeTransform(mem_tree) as tt:
+            with TreeTransform(store_tree) as tt:
                 file1 = tt.acquire_existing_id('file1')
                 dir1 = tt._tree_path_to_id('dir1')
                 tt.set_name_info(file1, dir1, 'file2')
                 raise SentryException
         with self.assertRaises(NoSuchFile):
-            mem_tree.read_content('dir1/file2')
+            store_tree.read_content('dir1/file2')
 
     def test_create_file(self):
-        mem_tree = StoreTree()
-        tt = TreeTransform(mem_tree)
+        store_tree = StoreTree()
+        tt = TreeTransform(store_tree)
         with self.assertRaises(NotPending):
             tt.create_file('name1', 'parent', ['hello'])
         with tt:
@@ -376,24 +393,24 @@ class TestTreeTransform(TestCase):
             source = tt._new_contents.full_path(file_id)
             target = tt.get_final_path(file_id)
             self.assertEqual(tt.generate_renames(), [(source, target)])
-        self.assertEqual('hello', ''.join(mem_tree.read_content('name1')))
+        self.assertEqual('hello', ''.join(store_tree.read_content('name1')))
 
     def test_delete(self):
-        mem_tree = StoreTree()
-        mem_tree.write_content('foo', ['hello'])
-        mem_tree.mkdir('bar')
-        tt = TreeTransform(mem_tree)
+        store_tree = StoreTree()
+        store_tree.write_content('foo', ['hello'])
+        store_tree.mkdir('bar')
+        tt = TreeTransform(store_tree)
         with self.assertRaises(NotPending):
             tt.delete('e-foo')
         with tt:
             tt.delete(tt.acquire_existing_id('foo'))
             tt.delete(tt.acquire_existing_id('bar'))
-            mem_tree.read_content('foo')
+            store_tree.read_content('foo')
             with self.assertRaises(IsDirectory):
-                mem_tree.read_content('bar')
+                store_tree.read_content('bar')
         with self.assertRaises(NotPending):
             tt.delete('e-foo')
         with self.assertRaises(NoSuchFile):
-            mem_tree.read_content('foo')
+            store_tree.read_content('foo')
         with self.assertRaises(NoSuchFile):
-            mem_tree.read_content('bar')
+            store_tree.read_content('bar')
