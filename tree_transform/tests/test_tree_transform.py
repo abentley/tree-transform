@@ -12,6 +12,7 @@ from tree_transform.tree_transform import (
     NotPending,
     NoParent,
     NoSuchFile,
+    OverlayFileStore,
     ParentNotDir,
     TreeTransform,
     )
@@ -137,6 +138,14 @@ class TestMemoryTree(TestCase, TreeTestMixin):
     @contextmanager
     def tree(self):
         yield MemoryTree()
+
+
+class TestOverlayTree(TestCase, TreeTestMixin):
+
+    @contextmanager
+    def tree(self):
+        with temp_dir() as tree_root:
+            yield MemoryTree(file_store=OverlayFileStore(FSTree(tree_root)))
 
 
 class TestFSTree(TestCase, TreeTestMixin):

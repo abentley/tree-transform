@@ -70,6 +70,14 @@ class FSTree(BaseTree):
     def rmtree(self, path):
         rmtree(self.full_path(path))
 
+    def get_type_mode(self, path):
+        try:
+            os.stat(self.full_path(path))
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                raise NoSuchFile
+            raise
+
     def read_content(self, path):
         """Store content from iterable of strings."""
         try:
@@ -142,6 +150,54 @@ class MemoryFileStore:
 
     def rename(self, old_path, new_path):
         self._content[new_path] = self._content.pop(old_path)
+
+
+class OverlayFileStore:
+
+    def __init__(self, base):
+        self.base = base
+        self.overlay = MemoryFileStore({})
+        self.overlay_content = set()
+        self.renames = {}
+
+    def _base_path(self, current_path):
+        return self.renames.get(current_path, current_path)
+
+    def require_parent(self, full_path):
+        try:
+            self.overlay.require_parent(full_path)
+        except NoParent:
+            try:
+                self.base.get_type_mode(os.path.dirname(full_path))
+            except NoSuchFile:
+                raise NoParent
+
+    def write_content(self, full_path, strings):
+        self.overlay_content.add(full_path)
+        return self.overlay.write_content(full_path, strings)
+
+    def mkdir(self, full_path):
+        self.overlay_content.add(full_path)
+        return self.overlay.mkdir(full_path)
+
+    def read_content(self, full_path):
+        if full_path in self.overlay_content:
+            return self.overlay.read_content(full_path)
+        return self.base.read_content(self._base_path(full_path))
+
+    def rmtree(self, full_path):
+        self.overlay.rmtree(full_path)
+        
+    def rename(self, old_path, new_path):
+        replace_l = len(old_path)
+        for key in list(self.overlay_content):
+            if key[:replace_l] != old_path:
+                continue
+            new_key = new_path + key[replace_l:]
+            self.overlay_content.remove(key)
+            self.overlay_content.add(new_key)
+            self.overlay.rename(key, new_key)
+        self.renames[new_path] = old_path
 
 
 class MemoryTree(BaseTree):
