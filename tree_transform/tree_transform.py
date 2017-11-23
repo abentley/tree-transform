@@ -3,6 +3,7 @@ from itertools import count
 import os
 import random
 from shutil import rmtree
+import stat
 from tempfile import mkdtemp
 
 __metaclass__ = type
@@ -59,22 +60,25 @@ class FSTree(BaseTree):
         # Not yet supported...
         return self
 
-    def write_content(self, path, strings):
-        """Store content from iterable of strings."""
+    def write_content(self, path, file_mode, strings):
+        """Store content from iterable of bytes."""
         try:
-            f = open(self.full_path(path), 'w')
-        except IOError as e:
+            f = os.open(self.full_path(path), os.O_WRONLY | os.O_CREAT,
+                        file_mode)
+        except OSError as e:
             if e.errno == errno.ENOENT:
                 raise NoParent
             if e.errno == errno.ENOTDIR:
                 raise ParentNotDir
             else:
                 raise
-        with f:
-            f.writelines(strings)
+        try:
+            os.write(f, b''.join(strings))
+        finally:
+            os.close(f)
 
-    def mkdir(self, path):
-        os.mkdir(self.full_path(path))
+    def mkdir(self, path, file_mode):
+        os.mkdir(self.full_path(path), file_mode)
 
     def mkdtemp(self):
         return mkdtemp(dir=self.tree_root, prefix='transform-')
@@ -89,9 +93,9 @@ class FSTree(BaseTree):
         rmtree(self.full_path(path))
 
     def read_content(self, path):
-        """Store content from iterable of strings."""
+        """Read content from iterable of strings."""
         try:
-            f = open(os.path.join(self.tree_root, path), 'r')
+            f = open(os.path.join(self.tree_root, path), 'rb')
         except IOError as e:
             if e.errno == errno.ENOENT:
                 raise NoSuchFile
@@ -101,6 +105,10 @@ class FSTree(BaseTree):
                 raise
         with f:
             return f.readlines()
+
+    def get_file_mode(self, path):
+        file_stat = os.stat(self.full_path(path))
+        return stat.S_IMODE(file_stat.st_mode)
 
     def rename(self, old_path, new_path):
         old_path = self.full_path(old_path)
@@ -139,12 +147,12 @@ class MemoryFileStore:
         for key in only_subpaths(full_path, self._content.keys()):
             yield key
 
-    def write_content(self, full_path, strings):
+    def write_content(self, full_path, file_mode, strings):
         """Store content from iterable of strings."""
-        self._content[full_path] = ''.join(strings)
+        self._content[full_path] = (file_mode, b''.join(strings))
 
-    def mkdir(self, full_path):
-        self._content[full_path] = self.DIRECTORY
+    def mkdir(self, full_path, file_mode):
+        self._content[full_path] = (file_mode, self.DIRECTORY)
 
     def read_content(self, full_path):
         """Access content as iterable of strings."""
@@ -152,9 +160,16 @@ class MemoryFileStore:
             content = self._content[full_path]
         except KeyError:
             raise NoSuchFile
-        if content is self.DIRECTORY:
+        if content[1] is self.DIRECTORY:
             raise IsDirectory
-        return iter([content])
+        return iter([content[1]])
+
+    def get_file_mode(self, full_path):
+        try:
+            content = self._content[full_path]
+        except KeyError:
+            raise NoSuchFile
+        return content[0]
 
     def discard(self, full_path):
         return self._content.pop(full_path, None)
@@ -179,18 +194,23 @@ class OverlayFileStore:
         for path in paths:
             yield back_names.get(path, path)
 
-    def write_content(self, full_path, strings):
+    def write_content(self, full_path, file_mode, strings):
         self.overlay_content.add(full_path)
-        return self.overlay.write_content(full_path, strings)
+        return self.overlay.write_content(full_path, file_mode, strings)
 
-    def mkdir(self, full_path):
+    def mkdir(self, full_path, file_mode):
         self.overlay_content.add(full_path)
-        return self.overlay.mkdir(full_path)
+        return self.overlay.mkdir(full_path, file_mode)
 
     def read_content(self, full_path):
         if full_path in self.overlay_content:
             return self.overlay.read_content(full_path)
         return self.base.read_content(self._base_path(full_path))
+
+    def get_file_mode(self, full_path):
+        if full_path in self.overlay_content:
+            return self.overlay.get_file_mode(full_path)
+        return self.base.get_file_mode(self._base_path(full_path))
 
     def iter_subpaths(self, full_path):
         all_keys = set(self.overlay_content)
@@ -242,6 +262,9 @@ class ReadOnlyStoreTree(BaseTree):
         """Access content as iterable of strings."""
         return self._file_store.read_content(self.full_path(path))
 
+    def get_file_mode(self, path):
+        return self._file_store.get_file_mode(self.full_path(path))
+
     def make_subtree(self, path):
         return type(self)(self.full_path(path), self._file_store)
 
@@ -255,31 +278,32 @@ class StoreTree(ReadOnlyStoreTree):
 
     def __init__(self, tree_root='', file_store=None):
         if file_store is None:
-            content = {tree_root: MemoryFileStore.DIRECTORY}
-            file_store = MemoryFileStore(content)
+            file_store = MemoryFileStore({})
+            file_store.mkdir('', 0o700)
         super(StoreTree, self).__init__(tree_root, file_store)
 
     def readonly_version(self):
         return ReadOnlyStoreTree(self.tree_root, self._file_store)
 
-    def write_content(self, path, strings):
+    def write_content(self, path, file_mode, strings):
         """Store content from iterable of strings."""
         full_path = self.full_path(path)
         self._require_parent(full_path)
-        return self._file_store.write_content(full_path, strings)
+        return self._file_store.write_content(full_path, file_mode, strings)
 
-    def mkdir(self, path):
-        return self._file_store.mkdir(self.full_path(path))
+    def mkdir(self, path, file_mode):
+        return self._file_store.mkdir(self.full_path(path), file_mode)
 
-    def rmtree(self, full_path):
-        for path in list(self._file_store.iter_subpaths(full_path)):
-            self._file_store.discard(path)
+    def rmtree(self, path):
+        full_path = self.full_path(path)
+        for sub_path in list(self._file_store.iter_subpaths(full_path)):
+            self._file_store.discard(sub_path)
 
     def mkdtemp(self):
         name = ''.join(random.choice('abcdefghijklmnopqrstuvwxyz')
                        for x in range(8))
         name = 'transform-' + name
-        self.mkdir(name)
+        self.mkdir(name, 0o700)
         return name
 
     def rename(self, old_path, new_path):
@@ -353,10 +377,10 @@ class TreeTransform:
     def __enter__(self):
         self._name_info = {}
         self._temp_tree = self.tree.make_temp_tree()
-        self._temp_tree.mkdir('new')
+        self._temp_tree.mkdir('new', 0o700)
         self._new_contents = self._temp_tree.make_subtree('new')
         self._new_contents_path = {}
-        self._temp_tree.mkdir('old')
+        self._temp_tree.mkdir('old', 0o700)
         self._old_contents = self._temp_tree.make_subtree('old')
         self._remove_ids = set()
         self.id_counter = count()
@@ -429,7 +453,7 @@ class TreeTransform:
     def create_file(self, name, parent_id, contents):
         file_id = self.make_new_id(name)
         self.set_name_info(file_id, parent_id, name)
-        self._new_contents.write_content(file_id, contents)
+        self._new_contents.write_content(file_id, None, contents)
         full_path = self._new_contents.full_path(file_id)
         self._new_contents_path[file_id] = full_path
         return file_id
