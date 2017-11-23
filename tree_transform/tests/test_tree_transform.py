@@ -65,7 +65,7 @@ class ReadOnlyTreeTestMixin:
                              'asdf')
 
 
-class StoreTestMixin(ReadOnlyStoreTestMixin):
+class StorageTestMixin(ReadOnlyStoreTestMixin):
 
     def test_write_content(self):
         with self.setup_tree() as tree:
@@ -111,6 +111,45 @@ class StoreTestMixin(ReadOnlyStoreTestMixin):
             actual = self.actual_tree(setup)
             setup.mkdir('dir1')
             self.assertCountEqual([], actual.iter_subpaths('dir'))
+
+
+class StoreTestMixin(StorageTestMixin):
+
+    def test_write_content_no_parent(self):
+        # Store's write_content doesn't enforce filesystem requirements.
+        with self.setup_tree() as tree:
+            actual = self.actual_tree(tree)
+            actual.write_content('non-existent/foo', ['asdf'])
+            self.assertEqual(['asdf'],
+                             list(actual.read_content('non-existent/foo')))
+
+    def test_write_content_parent_not_dir(self):
+        # Store's write_content doesn't enforce filesystem requirements.
+        with self.setup_tree() as tree:
+            tree.write_content('file', ['asdf'])
+            actual = self.actual_tree(tree)
+            actual.write_content('file/foo', ['asdf'])
+            self.assertEqual(['asdf'],
+                             list(actual.read_content('file/foo')))
+
+    def test_rename_dir_missing(self):
+        # Store's write_content doesn't enforce filesystem requirements.
+        with self.setup_tree() as tree:
+            tree.write_content('foo', ['asdf'])
+            actual = self.actual_tree(tree)
+            actual.rename('foo', 'bar/foo')
+            self.assertEqual(['asdf'],
+                             list(actual.read_content('bar/foo')))
+
+    def test_rename_parent_not_dir(self):
+        # Store's write_content doesn't enforce filesystem requirements.
+        with self.setup_tree() as tree:
+            tree.write_content('foo', ['asdf'])
+            tree.write_content('bar', ['asdf'])
+            actual = self.actual_tree(tree)
+            actual.rename('foo', 'bar/foo')
+            self.assertEqual(['asdf'],
+                             list(actual.read_content('bar/foo')))
 
 
 class TreeTestMixin(StoreTestMixin, ReadOnlyTreeTestMixin):
