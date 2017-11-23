@@ -29,6 +29,9 @@ def temp_dir():
 
 class ReadOnlyTreeTestMixin:
 
+    def assertCountEqual(self, *args, **kwargs):
+        return self.assertItemsEqual(*args, **kwargs)
+
     def test_read_content_no_file(self):
         with self.setup_tree() as tree:
             with self.assertRaises(NoSuchFile):
@@ -124,6 +127,25 @@ class TreeTestMixin(ReadOnlyTreeTestMixin):
                 actual.read_content('dir1')
             with self.assertRaises(NoSuchFile):
                 actual.read_content('dir1/foo')
+
+    def test_iter_subppaths(self):
+        with self.setup_tree() as setup:
+            actual = self.actual_tree(setup)
+            self.assertCountEqual([], actual.iter_subpaths('dir1'))
+            setup.mkdir('dir1')
+            self.assertCountEqual(['dir1'], actual.iter_subpaths('dir1'))
+            setup.mkdir('dir1/dir2')
+            self.assertCountEqual(['dir1', 'dir1/dir2'],
+                                  actual.iter_subpaths('dir1'))
+            setup.write_content('dir1/file1', ['hello'])
+            self.assertCountEqual(['dir1', 'dir1/dir2', 'dir1/file1'],
+                                  actual.iter_subpaths('dir1'))
+
+    def test_ignore_non_parent(self):
+        with self.setup_tree() as setup:
+            actual = self.actual_tree(setup)
+            setup.mkdir('dir1')
+            self.assertCountEqual([], actual.iter_subpaths('dir'))
 
     def test_apply_renames(self):
         with self.setup_tree() as tree:

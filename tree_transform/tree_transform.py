@@ -3,7 +3,6 @@ from itertools import count
 import os
 import random
 from shutil import rmtree
-import stat
 from tempfile import mkdtemp
 
 __metaclass__ = type
@@ -77,21 +76,15 @@ class FSTree(BaseTree):
     def mkdtemp(self):
         return mkdtemp(dir=self.tree_root, prefix='transform-')
 
+    def iter_subpaths(self, path):
+        for root, dirs, files in os.walk(self.full_path(path)):
+            yield os.path.relpath(root, self.tree_root)
+            for file_name in files:
+                yield os.path.relpath(
+                    os.path.join(root, file_name), self.tree_root)
+
     def rmtree(self, path):
         rmtree(self.full_path(path))
-
-    def get_type_mode(self, path):
-        try:
-            file_stat = os.stat(self.full_path(path))
-        except OSError as e:
-            if e.errno == errno.ENOENT:
-                raise NoSuchFile
-            raise
-        if stat.S_ISREG(file_stat):
-            file_type = FILE
-        elif stat.S_ISDIR(file_stat):
-            file_type = DIRECTORY
-        return file_type
 
     def read_content(self, path):
         """Store content from iterable of strings."""
@@ -121,7 +114,30 @@ class FSTree(BaseTree):
                 raise
 
 
-class MemoryFileStore:
+class BaseKeyStore:
+
+    def _only_subpaths(self, full_path, keys):
+        for key in keys:
+            if key == full_path or key.startswith(full_path + os.sep):
+                yield key
+
+    def rmtree(self, full_path):
+        for path in self.iter_subpaths(full_path):
+            self.discard(path)
+
+    def require_parent(self, full_path):
+        parent = os.path.dirname(full_path)
+        try:
+            self.read_content(parent)
+        except NoSuchFile:
+            raise NoParent
+        except IsDirectory:
+            pass
+        else:
+            raise ParentNotDir
+
+
+class MemoryFileStore(BaseKeyStore):
     """Represents a key/value file store (blob store) in memory.
 
     This does not enforce filesystem restrictions like the idea that every file
@@ -133,25 +149,9 @@ class MemoryFileStore:
     def __init__(self, content):
         self._content = content
 
-    def get_type_mode(self, full_path):
-        try:
-            content = self._content[full_path]
-        except KeyError:
-            raise NoSuchFile
-        return DIRECTORY if content is self.DIRECTORY else FILE
-
     def iter_subpaths(self, full_path):
-        for key in list(self._content.keys()):
-            if key == full_path or key.startswith(full_path + os.sep):
-                yield key
-
-    def require_parent(self, full_path):
-        parent = os.path.dirname(full_path)
-        parent_content = self._content.get(parent)
-        if parent_content is None:
-            raise NoParent
-        if parent_content is not self.DIRECTORY:
-            raise ParentNotDir
+        for key in self._only_subpaths(full_path, list(self._content.keys())):
+            yield key
 
     def write_content(self, full_path, strings):
         """Store content from iterable of strings."""
@@ -177,12 +177,7 @@ class MemoryFileStore:
         self._content[new_path] = self._content.pop(old_path)
 
 
-def store_rmtree(store, full_path):
-    for path in store.iter_subpaths(full_path):
-        store.discard(path)
-
-
-class OverlayFileStore:
+class OverlayFileStore(BaseKeyStore):
 
     def __init__(self, base):
         self.base = base
@@ -197,17 +192,6 @@ class OverlayFileStore:
         back_names = dict((v, k) for k, v in self.renames.items())
         for path in paths:
             yield back_names.get(path, path)
-
-    def require_parent(self, full_path):
-        try:
-            self.overlay.require_parent(full_path)
-        except NoParent:
-            try:
-                f_type = self.base.get_type_mode(os.path.dirname(full_path))
-            except NoSuchFile:
-                raise NoParent
-            if f_type != DIRECTORY:
-                raise ParentNotDir
 
     def write_content(self, full_path, strings):
         self.overlay_content.add(full_path)
@@ -228,9 +212,8 @@ class OverlayFileStore:
         base_path = self._base_path(full_path)
         base_subpaths = self.base.iter_subpaths(base_path)
         all_keys.update(self._current_paths(base_subpaths))
-        for key in all_keys:
-            if key.startswith(full_path):
-                yield key
+        for key in self._only_subpaths(full_path, all_keys):
+            yield key
 
     def discard(self, full_path):
         self.overlay_content.add(full_path)
@@ -262,9 +245,6 @@ class ReadOnlyStoreTree(BaseTree):
         """Access content as iterable of strings."""
         return self._file_store.read_content(self.full_path(path))
 
-    def get_type_mode(self, path):
-        return self._file_store.get_type_mode(self.full_path(path))
-
     def make_subtree(self, path):
         return type(self)(self.full_path(path), self._file_store)
 
@@ -295,7 +275,7 @@ class StoreTree(ReadOnlyStoreTree):
         return self._file_store.mkdir(self.full_path(path))
 
     def rmtree(self, path):
-        return store_rmtree(self._file_store, path)
+        return self._file_store.rmtree(path)
 
     def mkdtemp(self):
         name = ''.join(random.choice('abcdefghijklmnopqrstuvwxyz')
