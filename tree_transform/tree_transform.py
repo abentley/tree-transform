@@ -41,6 +41,9 @@ class BaseTree:
     def full_path(self, path):
         return os.path.join(self.tree_root, path)
 
+    def relpath(self, path):
+        return os.path.relpath(path, self.tree_root)
+
     def make_temp_tree(self):
         tree_root = self.mkdtemp()
         return self.make_subtree(tree_root)
@@ -78,10 +81,9 @@ class FSTree(BaseTree):
 
     def iter_subpaths(self, path):
         for root, dirs, files in os.walk(self.full_path(path)):
-            yield os.path.relpath(root, self.tree_root)
+            yield self.relpath(root)
             for file_name in files:
-                yield os.path.relpath(
-                    os.path.join(root, file_name), self.tree_root)
+                yield self.relpath(os.path.join(root, file_name))
 
     def rmtree(self, path):
         rmtree(self.full_path(path))
@@ -114,30 +116,14 @@ class FSTree(BaseTree):
                 raise
 
 
-class BaseKeyStore:
-
-    def _only_subpaths(self, full_path, keys):
-        for key in keys:
-            if key == full_path or key.startswith(full_path + os.sep):
-                yield key
-
-    def rmtree(self, full_path):
-        for path in self.iter_subpaths(full_path):
-            self.discard(path)
-
-    def require_parent(self, full_path):
-        parent = os.path.dirname(full_path)
-        try:
-            self.read_content(parent)
-        except NoSuchFile:
-            raise NoParent
-        except IsDirectory:
-            pass
-        else:
-            raise ParentNotDir
+def only_subpaths(super_path, paths):
+    """From an iterable of paths, emit only those that are subpaths."""
+    for path in paths:
+        if path == super_path or path.startswith(super_path + os.sep):
+            yield path
 
 
-class MemoryFileStore(BaseKeyStore):
+class MemoryFileStore:
     """Represents a key/value file store (blob store) in memory.
 
     This does not enforce filesystem restrictions like the idea that every file
@@ -150,7 +136,7 @@ class MemoryFileStore(BaseKeyStore):
         self._content = content
 
     def iter_subpaths(self, full_path):
-        for key in self._only_subpaths(full_path, list(self._content.keys())):
+        for key in only_subpaths(full_path, self._content.keys()):
             yield key
 
     def write_content(self, full_path, strings):
@@ -177,7 +163,7 @@ class MemoryFileStore(BaseKeyStore):
         self._content[new_path] = self._content.pop(old_path)
 
 
-class OverlayFileStore(BaseKeyStore):
+class OverlayFileStore:
 
     def __init__(self, base):
         self.base = base
@@ -212,7 +198,7 @@ class OverlayFileStore(BaseKeyStore):
         base_path = self._base_path(full_path)
         base_subpaths = self.base.iter_subpaths(base_path)
         all_keys.update(self._current_paths(base_subpaths))
-        for key in self._only_subpaths(full_path, all_keys):
+        for key in only_subpaths(full_path, all_keys):
             yield key
 
     def discard(self, full_path):
@@ -237,9 +223,20 @@ class ReadOnlyStoreTree(BaseTree):
         super(ReadOnlyStoreTree, self).__init__(tree_root)
         self._file_store = file_store
 
+    def _require_parent(self, full_path):
+        parent = os.path.dirname(full_path)
+        try:
+            self._file_store.read_content(parent)
+        except NoSuchFile:
+            raise NoParent
+        except IsDirectory:
+            pass
+        else:
+            raise ParentNotDir
+
     def iter_subpaths(self, path):
         for path in self._file_store.iter_subpaths(self.full_path(path)):
-            yield os.path.relpath(path, self.tree_root)
+            yield self.relpath(path)
 
     def read_content(self, path):
         """Access content as iterable of strings."""
@@ -268,14 +265,15 @@ class StoreTree(ReadOnlyStoreTree):
     def write_content(self, path, strings):
         """Store content from iterable of strings."""
         full_path = self.full_path(path)
-        self._file_store.require_parent(full_path)
+        self._require_parent(full_path)
         return self._file_store.write_content(full_path, strings)
 
     def mkdir(self, path):
         return self._file_store.mkdir(self.full_path(path))
 
-    def rmtree(self, path):
-        return self._file_store.rmtree(path)
+    def rmtree(self, full_path):
+        for path in list(self._file_store.iter_subpaths(full_path)):
+            self._file_store.discard(path)
 
     def mkdtemp(self):
         name = ''.join(random.choice('abcdefghijklmnopqrstuvwxyz')
@@ -286,7 +284,7 @@ class StoreTree(ReadOnlyStoreTree):
 
     def rename(self, old_path, new_path):
         full_new_path = self.full_path(new_path)
-        self._file_store.require_parent(full_new_path)
+        self._require_parent(full_new_path)
         self._file_store.rename(self.full_path(old_path), full_new_path)
 
 
@@ -447,10 +445,8 @@ class TreeTransform:
     def _generate_remove_renames(self):
         remove_renames = []
         new_contents_path = dict(self._new_contents_path)
-        relative_new_contents = os.path.relpath(self._new_contents.tree_root,
-                                                self.tree.tree_root)
-        relative_old_contents = os.path.relpath(self._old_contents.tree_root,
-                                                self.tree.tree_root)
+        relative_new_contents = self.tree.relpath(self._new_contents.tree_root)
+        relative_old_contents = self.tree.relpath(self._old_contents.tree_root)
         for file_id, (parent_id, name) in self._name_info.items():
             if file_id in self._new_contents_path:
                 continue

@@ -8,12 +8,13 @@ from tree_transform.tree_transform import (
     FSTree,
     InactiveTransform,
     IsDirectory,
-    StoreTree,
+    MemoryFileStore,
     NotPending,
     NoParent,
     NoSuchFile,
     OverlayFileStore,
     ParentNotDir,
+    StoreTree,
     TreeTransform,
     )
 
@@ -27,7 +28,7 @@ def temp_dir():
         rmtree(temp)
 
 
-class ReadOnlyTreeTestMixin:
+class ReadOnlyStoreTestMixin:
 
     def assertCountEqual(self, *args, **kwargs):
         return self.assertItemsEqual(*args, **kwargs)
@@ -42,6 +43,9 @@ class ReadOnlyTreeTestMixin:
             tree.mkdir('foo')
             with self.assertRaises(IsDirectory):
                 self.actual_tree(tree).read_content('foo')
+
+
+class ReadOnlyTreeTestMixin:
 
     def test_make_subtree(self):
         with self.setup_tree() as tree:
@@ -61,25 +65,12 @@ class ReadOnlyTreeTestMixin:
                              'asdf')
 
 
-class TreeTestMixin(ReadOnlyTreeTestMixin):
+class StoreTestMixin(ReadOnlyStoreTestMixin):
 
     def test_write_content(self):
         with self.setup_tree() as tree:
             tree.write_content('foo', ['asdf'])
             self.assertEqual(''.join(tree.read_content('foo')), 'asdf')
-
-    def test_write_content_no_parent(self):
-        with self.setup_tree() as tree:
-            with self.assertRaises(NoParent):
-                actual = self.actual_tree(tree)
-                actual.write_content('non-existent/foo', ['asdf'])
-
-    def test_write_content_parent_not_dir(self):
-        with self.setup_tree() as tree:
-            tree.write_content('file', ['asdf'])
-            actual = self.actual_tree(tree)
-            with self.assertRaises(ParentNotDir):
-                actual.write_content('file/foo', ['asdf'])
 
     def test_rename(self):
         with self.setup_tree() as tree:
@@ -96,37 +87,11 @@ class TreeTestMixin(ReadOnlyTreeTestMixin):
             actual.rename('foo', 'bar/foo')
             self.assertEqual(''.join(actual.read_content('bar/foo')), 'asdf')
 
-    def test_rename_dir_missing(self):
-        with self.setup_tree() as tree:
-            tree.write_content('foo', ['asdf'])
-            actual = self.actual_tree(tree)
-            with self.assertRaises(NoParent):
-                actual.rename('foo', 'bar/foo')
-
-    def test_rename_parent_not_dir(self):
-        with self.setup_tree() as tree:
-            tree.write_content('foo', ['asdf'])
-            tree.write_content('bar', ['asdf'])
-            actual = self.actual_tree(tree)
-            with self.assertRaises(ParentNotDir):
-                actual.rename('foo', 'bar/foo')
-
     def test_mkdir(self):
         with self.setup_tree() as tree:
             actual = self.actual_tree(tree)
             actual.mkdir('dir1')
             actual.write_content('dir1/foo', ['asdf'])
-
-    def test_rmtree(self):
-        with self.setup_tree() as tree:
-            tree.mkdir('dir1')
-            tree.write_content('dir1/foo', ['asdf'])
-            actual = self.actual_tree(tree)
-            actual.rmtree('dir1')
-            with self.assertRaises(NoSuchFile):
-                actual.read_content('dir1')
-            with self.assertRaises(NoSuchFile):
-                actual.read_content('dir1/foo')
 
     def test_iter_subppaths(self):
         with self.setup_tree() as setup:
@@ -146,6 +111,58 @@ class TreeTestMixin(ReadOnlyTreeTestMixin):
             actual = self.actual_tree(setup)
             setup.mkdir('dir1')
             self.assertCountEqual([], actual.iter_subpaths('dir'))
+
+
+class TreeTestMixin(StoreTestMixin, ReadOnlyTreeTestMixin):
+    # The Tree API is basically a superset of the Store API, except that it
+    # also enforces filesystem requirements.
+
+    def test_write_content_no_parent(self):
+        # Not a store test because store's write_content doesn't enforce
+        # filesystem requirements.
+        with self.setup_tree() as tree:
+            with self.assertRaises(NoParent):
+                actual = self.actual_tree(tree)
+                actual.write_content('non-existent/foo', ['asdf'])
+
+    def test_write_content_parent_not_dir(self):
+        # Not a store test because store's write_content doesn't enforce
+        # filesystem requirements.
+        with self.setup_tree() as tree:
+            tree.write_content('file', ['asdf'])
+            actual = self.actual_tree(tree)
+            with self.assertRaises(ParentNotDir):
+                actual.write_content('file/foo', ['asdf'])
+
+    def test_rename_dir_missing(self):
+        # Not a store test because store's rename doesn't enforce filesystem
+        # requirements.
+        with self.setup_tree() as tree:
+            tree.write_content('foo', ['asdf'])
+            actual = self.actual_tree(tree)
+            with self.assertRaises(NoParent):
+                actual.rename('foo', 'bar/foo')
+
+    def test_rename_parent_not_dir(self):
+        # Not a store test because store's rename doesn't enforce filesystem
+        # requirements.
+        with self.setup_tree() as tree:
+            tree.write_content('foo', ['asdf'])
+            tree.write_content('bar', ['asdf'])
+            actual = self.actual_tree(tree)
+            with self.assertRaises(ParentNotDir):
+                actual.rename('foo', 'bar/foo')
+
+    def test_rmtree(self):
+        with self.setup_tree() as tree:
+            tree.mkdir('dir1')
+            tree.write_content('dir1/foo', ['asdf'])
+            actual = self.actual_tree(tree)
+            actual.rmtree('dir1')
+            with self.assertRaises(NoSuchFile):
+                actual.read_content('dir1')
+            with self.assertRaises(NoSuchFile):
+                actual.read_content('dir1/foo')
 
     def test_apply_renames(self):
         with self.setup_tree() as tree:
@@ -205,6 +222,26 @@ class TestStoreTree(TestCase, TreeTestMixin):
 
     def actual_tree(self, tree):
         return tree
+
+
+class TestMemoryFileStore(TestCase, StoreTestMixin):
+
+    @contextmanager
+    def setup_tree(self):
+        yield MemoryFileStore({})
+
+    def actual_tree(self, tree):
+        return tree
+
+
+class TestOverlayFileStore(TestCase, StoreTestMixin):
+
+    @contextmanager
+    def setup_tree(self):
+        yield MemoryFileStore({})
+
+    def actual_tree(self, tree):
+        return OverlayFileStore(tree)
 
 
 class TestOverlayTree(TestCase, TreeTestMixin):
