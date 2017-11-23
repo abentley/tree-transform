@@ -271,8 +271,7 @@ class ReadOnlyStoreTree(BaseTree):
         return type(self)(self.full_path(path), self._file_store)
 
     def readonly_version(self):
-        # Can't get more read-only...
-        return self
+        return ReadOnlyStoreTree(self.tree_root, self._file_store)
 
 
 class StoreTree(ReadOnlyStoreTree):
@@ -283,9 +282,6 @@ class StoreTree(ReadOnlyStoreTree):
             file_store = MemoryFileStore({})
             file_store.mkdir('', 0o700)
         super(StoreTree, self).__init__(tree_root, file_store)
-
-    def readonly_version(self):
-        return ReadOnlyStoreTree(self.tree_root, self._file_store)
 
     def write_content(self, path, file_mode, strings):
         """Store content from iterable of strings."""
