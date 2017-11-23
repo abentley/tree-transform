@@ -52,6 +52,25 @@ class ReadOnlyStoreTestMixin:
             self.assertEqual(0o745, actual.get_file_mode('foo'))
             self.assertEqual(0o654, actual.get_file_mode('bar'))
 
+    def test_iter_subppaths(self):
+        with self.setup_tree() as setup:
+            actual = self.actual_tree(setup)
+            self.assertCountEqual([], actual.iter_subpaths('dir1'))
+            setup.mkdir('dir1', 0o700)
+            self.assertCountEqual(['dir1'], actual.iter_subpaths('dir1'))
+            setup.mkdir('dir1/dir2', 0o700)
+            self.assertCountEqual(['dir1', 'dir1/dir2'],
+                                  actual.iter_subpaths('dir1'))
+            setup.write_content('dir1/file1', 0o600, [b'hello'])
+            self.assertCountEqual(['dir1', 'dir1/dir2', 'dir1/file1'],
+                                  actual.iter_subpaths('dir1'))
+
+    def test_ignore_non_parent(self):
+        with self.setup_tree() as setup:
+            actual = self.actual_tree(setup)
+            setup.mkdir('dir1', 0o700)
+            self.assertCountEqual([], actual.iter_subpaths('dir'))
+
 
 class ReadOnlyTreeTestMixin:
 
@@ -100,25 +119,6 @@ class StorageTestMixin(ReadOnlyStoreTestMixin):
             actual = self.actual_tree(tree)
             actual.mkdir('dir1', 0o700)
             actual.write_content('dir1/foo', 0o600, [b'asdf'])
-
-    def test_iter_subppaths(self):
-        with self.setup_tree() as setup:
-            actual = self.actual_tree(setup)
-            self.assertCountEqual([], actual.iter_subpaths('dir1'))
-            setup.mkdir('dir1', 0o700)
-            self.assertCountEqual(['dir1'], actual.iter_subpaths('dir1'))
-            setup.mkdir('dir1/dir2', 0o700)
-            self.assertCountEqual(['dir1', 'dir1/dir2'],
-                                  actual.iter_subpaths('dir1'))
-            setup.write_content('dir1/file1', 0o600, [b'hello'])
-            self.assertCountEqual(['dir1', 'dir1/dir2', 'dir1/file1'],
-                                  actual.iter_subpaths('dir1'))
-
-    def test_ignore_non_parent(self):
-        with self.setup_tree() as setup:
-            actual = self.actual_tree(setup)
-            setup.mkdir('dir1', 0o700)
-            self.assertCountEqual([], actual.iter_subpaths('dir'))
 
 
 class StoreTestMixin(StorageTestMixin):
@@ -264,11 +264,24 @@ class TreeTestMixin(StoreTestMixin, ReadOnlyTreeTestMixin):
             self.assertRegexpMatches(name, 'transform-')
 
 
-class TestReadOnlyStoreTree(TestCase, ReadOnlyTreeTestMixin):
+class TestReadOnlyStoreTree(TestCase, ReadOnlyTreeTestMixin,
+                            ReadOnlyStoreTestMixin):
 
     @contextmanager
     def setup_tree(self):
         yield StoreTree()
+
+    def actual_tree(self, tree):
+        return tree.readonly_version()
+
+
+class TestReadOnlyFSTree(TestCase, ReadOnlyTreeTestMixin,
+                         ReadOnlyStoreTestMixin):
+
+    @contextmanager
+    def setup_tree(self):
+        with temp_dir() as tree_root:
+            yield FSTree(tree_root)
 
     def actual_tree(self, tree):
         return tree.readonly_version()

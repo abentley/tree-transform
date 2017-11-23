@@ -50,15 +50,41 @@ class BaseTree:
         return self.make_subtree(tree_root)
 
 
-class FSTree(BaseTree):
-    """Represents a filesystem tree."""
+class ReadOnlyFSTree(BaseTree):
 
     def make_subtree(self, path):
         return type(self)(self.full_path(path))
 
     def readonly_version(self):
-        # Not yet supported...
-        return self
+        return ReadOnlyFSTree(self.tree_root)
+
+    def iter_subpaths(self, path):
+        for root, dirs, files in os.walk(self.full_path(path)):
+            yield self.relpath(root)
+            for file_name in files:
+                yield self.relpath(os.path.join(root, file_name))
+
+    def read_content(self, path):
+        """Read content from iterable of strings."""
+        try:
+            f = open(os.path.join(self.tree_root, path), 'rb')
+        except IOError as e:
+            if e.errno == errno.ENOENT:
+                raise NoSuchFile
+            elif e.errno == errno.EISDIR:
+                raise IsDirectory
+            else:
+                raise
+        with f:
+            return f.readlines()
+
+    def get_file_mode(self, path):
+        file_stat = os.stat(self.full_path(path))
+        return stat.S_IMODE(file_stat.st_mode)
+
+
+class FSTree(ReadOnlyFSTree):
+    """Represents a filesystem tree."""
 
     def write_content(self, path, file_mode, strings):
         """Store content from iterable of bytes."""
@@ -83,32 +109,8 @@ class FSTree(BaseTree):
     def mkdtemp(self):
         return mkdtemp(dir=self.tree_root, prefix='transform-')
 
-    def iter_subpaths(self, path):
-        for root, dirs, files in os.walk(self.full_path(path)):
-            yield self.relpath(root)
-            for file_name in files:
-                yield self.relpath(os.path.join(root, file_name))
-
     def rmtree(self, path):
         rmtree(self.full_path(path))
-
-    def read_content(self, path):
-        """Read content from iterable of strings."""
-        try:
-            f = open(os.path.join(self.tree_root, path), 'rb')
-        except IOError as e:
-            if e.errno == errno.ENOENT:
-                raise NoSuchFile
-            elif e.errno == errno.EISDIR:
-                raise IsDirectory
-            else:
-                raise
-        with f:
-            return f.readlines()
-
-    def get_file_mode(self, path):
-        file_stat = os.stat(self.full_path(path))
-        return stat.S_IMODE(file_stat.st_mode)
 
     def rename(self, old_path, new_path):
         old_path = self.full_path(old_path)
